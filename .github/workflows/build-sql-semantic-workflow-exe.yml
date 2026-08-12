@@ -1,0 +1,42 @@
+name: Build SQL Semantic Workflow EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - ".github/workflows/build-sql-semantic-workflow-exe.yml"
+      - "requirements.txt"
+      - "交付_文件对文件SQL语义比对/**"
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas openpyxl xlrd lxml pyinstaller
+
+      - name: Build EXE
+        shell: cmd
+        run: |
+          cd /d "交付_文件对文件SQL语义比对"
+          pyinstaller --noconfirm --clean --onefile --windowed --name SQL语义比对工作流 sql_semantic_workflow_gui.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SQL语义比对工作流-Windows-EXE
+          path: 交付_文件对文件SQL语义比对/dist/SQL语义比对工作流.exe
