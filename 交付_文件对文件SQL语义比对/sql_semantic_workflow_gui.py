@@ -34,7 +34,7 @@ class SqlSemanticWorkflowApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("SQL 语义比对工作流")
-        self.root.geometry("1180x920")
+        self.root.geometry("1040x800")
         self.settings = load_settings()
 
         self.base_file = tk.StringVar(value=self.settings.get("base_file", ""))
@@ -85,11 +85,6 @@ class SqlSemanticWorkflowApp:
         info.pack(fill=tk.X, pady=(12, 0))
         self.status_var = tk.StringVar(value="待开始")
         ttk.Label(info, textvariable=self.status_var).pack(anchor="w")
-
-        selected = ttk.LabelFrame(frame, text="当前已选择的 review_results_part 文件", padding=10)
-        selected.pack(fill=tk.X, pady=(12, 0))
-        self.review_files_text = tk.Text(selected, height=5, wrap=tk.WORD)
-        self.review_files_text.pack(fill=tk.X)
 
         command_frame = ttk.LabelFrame(frame, text="命令预览", padding=10)
         command_frame.pack(fill=tk.X, pady=(12, 0))
@@ -320,12 +315,7 @@ class SqlSemanticWorkflowApp:
             self.status_var.set("未发现 review_results_part 文件")
 
     def _render_review_result_files(self) -> None:
-        self.review_files_text.delete("1.0", tk.END)
-        if not self.review_result_files:
-            self.review_files_text.insert(tk.END, "未选择文件\n")
-            return
-        for path in self.review_result_files:
-            self.review_files_text.insert(tk.END, str(path) + "\n")
+        pass
 
     def _extract_part_no(self, path: Path) -> int | None:
         match = re.search(r"review_results_part_(\d+)\.json$", path.name)
@@ -428,6 +418,8 @@ class SqlSemanticWorkflowApp:
             if not self.review_result_files:
                 raise RuntimeError("未选择 review_results_part 文件")
 
+            selected_names = "；".join(path.name for path in self.review_result_files)
+            self._set_status(f"已识别 review_results_part 文件：{selected_names}")
             self._set_status("正在检查 review_results_part 是否齐全...")
             self._validate_review_parts(result_dir)
             self._set_status("正在合并 review_results_part 文件...")
