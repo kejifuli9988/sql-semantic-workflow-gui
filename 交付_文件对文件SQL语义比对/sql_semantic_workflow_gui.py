@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import re
 import subprocess
 import sys
 import traceback
@@ -44,11 +45,13 @@ class SqlSemanticWorkflowApp:
         self.top_k = tk.StringVar(value=str(self.settings.get("top_k", 3)))
         self.batch_size = tk.StringVar(value=str(self.settings.get("batch_size", 20)))
         self.result_dir = tk.StringVar(value=self.settings.get("result_dir", str(Path.cwd() / "result")))
-        self.final_excel = tk.StringVar(value=self.settings.get("final_excel", str(Path.cwd() / "result" / "result.xlsx")))
+        self.base_columns: List[str] = []
+        self.target_columns: List[str] = []
 
         self.review_result_files: List[Path] = []
 
         self._build_ui()
+        self._load_saved_column_options()
         self.refresh_prompt_preview()
 
     def _build_ui(self) -> None:
@@ -60,25 +63,19 @@ class SqlSemanticWorkflowApp:
 
         self._row_file(form, 0, "主文件", self.base_file, self.pick_base_file)
         self._row_file(form, 1, "对比文件", self.target_file, self.pick_target_file)
-        self._row_text(form, 2, "主文件 SQL 列", self.base_sql_column)
-        self._row_text(form, 3, "对比文件 SQL 列", self.target_sql_column)
-        self._row_text(form, 4, "主文件主键列", self.base_id_column)
+        self.base_sql_column_box = self._row_select(form, 2, "主文件 SQL 列", self.base_sql_column)
+        self.target_sql_column_box = self._row_select(form, 3, "对比文件 SQL 列", self.target_sql_column)
+        self.base_id_column_box = self._row_select(form, 4, "主文件主键列", self.base_id_column)
         self._row_text(form, 5, "候选召回 top_k", self.top_k)
         self._row_text(form, 6, "每批条数", self.batch_size)
         self._row_file(form, 7, "结果目录", self.result_dir, self.pick_result_dir, directory=True)
-        self._row_file(form, 8, "最终 Excel", self.final_excel, self.pick_final_excel, save=True)
 
         actions = ttk.LabelFrame(frame, text="操作", padding=10)
         actions.pack(fill=tk.X, pady=(12, 0))
 
-        ttk.Button(actions, text="查看主文件列名", command=self.preview_base_columns).grid(row=0, column=0, padx=6, pady=6, sticky="w")
-        ttk.Button(actions, text="查看对比文件列名", command=self.preview_target_columns).grid(row=0, column=1, padx=6, pady=6, sticky="w")
-        ttk.Button(actions, text="1. 生成 Prepare 并拆分", command=self.generate_prepare_and_split).grid(row=0, column=2, padx=6, pady=6, sticky="w")
-        ttk.Button(actions, text="2. 选择 review_results_part 文件", command=self.pick_review_result_files).grid(row=0, column=3, padx=6, pady=6, sticky="w")
-        ttk.Button(actions, text="3. 自动发现 review_results_part 文件", command=self.auto_detect_review_result_files).grid(row=0, column=4, padx=6, pady=6, sticky="w")
-        ttk.Button(actions, text="4. 合并并生成 Excel", command=self.merge_and_finalize).grid(row=0, column=5, padx=6, pady=6, sticky="w")
-        ttk.Button(actions, text="刷新提示词", command=self.refresh_prompt_preview).grid(row=0, column=6, padx=6, pady=6, sticky="w")
-        ttk.Button(actions, text="复制提示词", command=self.copy_prompt).grid(row=0, column=7, padx=6, pady=6, sticky="w")
+        ttk.Button(actions, text="1. 生成 Prepare 并拆分", command=self.generate_prepare_and_split).grid(row=0, column=0, padx=6, pady=6, sticky="w")
+        ttk.Button(actions, text="2. 刷新并复制提示词", command=self.refresh_and_copy_prompt).grid(row=0, column=1, padx=6, pady=6, sticky="w")
+        ttk.Button(actions, text="3. 合并 review_results_part 生成 Excel", command=self.merge_and_finalize).grid(row=0, column=2, padx=6, pady=6, sticky="w")
         ttk.Button(actions, text="打开结果目录", command=self.open_result_dir).grid(row=1, column=0, padx=6, pady=6, sticky="w")
         ttk.Button(actions, text="打开最终 Excel", command=self.open_final_excel).grid(row=1, column=1, padx=6, pady=6, sticky="w")
         ttk.Button(actions, text="复制 Prepare 命令", command=self.copy_prepare_command).grid(row=1, column=2, padx=6, pady=6, sticky="w")
@@ -88,11 +85,6 @@ class SqlSemanticWorkflowApp:
         info.pack(fill=tk.X, pady=(12, 0))
         self.status_var = tk.StringVar(value="待开始")
         ttk.Label(info, textvariable=self.status_var).pack(anchor="w")
-
-        columns_frame = ttk.LabelFrame(frame, text="列名预览", padding=10)
-        columns_frame.pack(fill=tk.X, pady=(12, 0))
-        self.columns_text = tk.Text(columns_frame, height=6, wrap=tk.WORD)
-        self.columns_text.pack(fill=tk.X)
 
         selected = ttk.LabelFrame(frame, text="当前已选择的 review_results_part 文件", padding=10)
         selected.pack(fill=tk.X, pady=(12, 0))
@@ -119,16 +111,33 @@ class SqlSemanticWorkflowApp:
         ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=4)
         ttk.Entry(parent, textvariable=var, width=30).grid(row=row, column=1, sticky="w", pady=4)
 
+    def _row_select(self, parent: ttk.LabelFrame, row: int, label: str, var: tk.StringVar) -> ttk.Combobox:
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=4)
+        combo = ttk.Combobox(parent, textvariable=var, width=40, state="readonly")
+        combo.grid(row=row, column=1, sticky="w", pady=4)
+        return combo
+
+    def _load_saved_column_options(self) -> None:
+        try:
+            if Path(self.base_file.get().strip()).exists():
+                self.load_base_columns()
+            if Path(self.target_file.get().strip()).exists():
+                self.load_target_columns()
+        except Exception:
+            pass
+
     def pick_base_file(self) -> None:
         path = filedialog.askopenfilename(title="选择主文件", filetypes=[("Excel Files", "*.xlsx *.xls *.html *.htm"), ("All Files", "*.*")])
         if path:
             self.base_file.set(path)
+            self.load_base_columns()
             self.refresh_all_previews()
 
     def pick_target_file(self) -> None:
         path = filedialog.askopenfilename(title="选择对比文件", filetypes=[("Excel Files", "*.xlsx *.xls *.html *.htm"), ("All Files", "*.*")])
         if path:
             self.target_file.set(path)
+            self.load_target_columns()
             self.refresh_all_previews()
 
     def pick_result_dir(self) -> None:
@@ -137,14 +146,11 @@ class SqlSemanticWorkflowApp:
             self.result_dir.set(path)
             self.refresh_all_previews()
 
-    def pick_final_excel(self) -> None:
-        path = filedialog.asksaveasfilename(title="选择最终 Excel 路径", defaultextension=".xlsx", filetypes=[("Excel Files", "*.xlsx")])
-        if path:
-            self.final_excel.set(path)
-            self.refresh_all_previews()
-
     def _quote(self, text: str) -> str:
         return f'"{text}"'
+
+    def _final_excel_path(self) -> Path:
+        return Path(self.result_dir.get().strip() or ".") / "final_result.xlsx"
 
     def _prepare_command(self) -> str:
         base_sql_column = self.base_sql_column.get().strip()
@@ -196,7 +202,7 @@ class SqlSemanticWorkflowApp:
             "--mode", "finalize",
             "--prepared", self._quote(str(result_dir / "prepare.json")),
             "--review-results", self._quote(str(result_dir / "review_results.json")),
-            "--output", self._quote(self.final_excel.get().strip()),
+            "--output", self._quote(str(self._final_excel_path())),
         ])
 
     def refresh_command_preview(self) -> None:
@@ -216,6 +222,10 @@ class SqlSemanticWorkflowApp:
     def refresh_all_previews(self) -> None:
         self.refresh_prompt_preview()
         self.refresh_command_preview()
+
+    def _set_status(self, message: str) -> None:
+        self.status_var.set(message)
+        self.root.update_idletasks()
 
     def _copy_text(self, text: str, success_message: str) -> None:
         self.root.clipboard_clear()
@@ -248,33 +258,48 @@ class SqlSemanticWorkflowApp:
 
     def open_final_excel(self) -> None:
         try:
-            self._open_path(Path(self.final_excel.get().strip()))
+            self._open_path(self._final_excel_path())
         except Exception as exc:
             messagebox.showerror("错误", f"{exc}\n\n{traceback.format_exc()}")
 
-    def _preview_columns(self, file_path: str, title: str) -> None:
-        path = Path(file_path.strip())
+    def _set_combobox_values(self, combo: ttk.Combobox, values: List[str]) -> None:
+        combo["values"] = values
+
+    def _auto_pick_sql_column(self, columns: List[str]) -> str:
+        try:
+            return workflow.pick_sql_column(columns, None)
+        except Exception:
+            return columns[0] if columns else ""
+
+    def _auto_pick_id_column(self, columns: List[str]) -> str:
+        preferred = ["任务编号", "技术治理单号", "治理单号", "需求ID", "需求编号", "ID", "id"]
+        for name in preferred:
+            if name in columns:
+                return name
+        return columns[0] if columns else ""
+
+    def load_base_columns(self) -> None:
+        path = Path(self.base_file.get().strip())
         if not path.exists():
-            raise RuntimeError(f"文件不存在: {path}")
+            return
         df = workflow.load_table(path)
-        columns = [str(col).strip() for col in df.columns]
-        self.columns_text.delete("1.0", tk.END)
-        self.columns_text.insert(tk.END, f"{title}：{path}\n")
-        self.columns_text.insert(tk.END, f"共 {len(columns)} 列\n")
-        self.columns_text.insert(tk.END, "\n".join(f"- {name}" for name in columns) + "\n")
-        self.status_var.set(f"已读取{title}列名，共 {len(columns)} 列")
+        self.base_columns = [str(col).strip() for col in df.columns if str(col).strip()]
+        self._set_combobox_values(self.base_sql_column_box, self.base_columns)
+        self._set_combobox_values(self.base_id_column_box, [""] + self.base_columns)
+        if self.base_sql_column.get().strip() not in self.base_columns:
+            self.base_sql_column.set(self._auto_pick_sql_column(self.base_columns))
+        if self.base_id_column.get().strip() not in self.base_columns:
+            self.base_id_column.set(self._auto_pick_id_column(self.base_columns))
 
-    def preview_base_columns(self) -> None:
-        try:
-            self._preview_columns(self.base_file.get(), "主文件列名")
-        except Exception as exc:
-            messagebox.showerror("错误", f"{exc}\n\n{traceback.format_exc()}")
-
-    def preview_target_columns(self) -> None:
-        try:
-            self._preview_columns(self.target_file.get(), "对比文件列名")
-        except Exception as exc:
-            messagebox.showerror("错误", f"{exc}\n\n{traceback.format_exc()}")
+    def load_target_columns(self) -> None:
+        path = Path(self.target_file.get().strip())
+        if not path.exists():
+            return
+        df = workflow.load_table(path)
+        self.target_columns = [str(col).strip() for col in df.columns if str(col).strip()]
+        self._set_combobox_values(self.target_sql_column_box, self.target_columns)
+        if self.target_sql_column.get().strip() not in self.target_columns:
+            self.target_sql_column.set(self._auto_pick_sql_column(self.target_columns))
 
     def pick_review_result_files(self) -> None:
         paths = filedialog.askopenfilenames(title="选择 review_results_part 文件", filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")])
@@ -302,6 +327,39 @@ class SqlSemanticWorkflowApp:
         for path in self.review_result_files:
             self.review_files_text.insert(tk.END, str(path) + "\n")
 
+    def _extract_part_no(self, path: Path) -> int | None:
+        match = re.search(r"review_results_part_(\d+)\.json$", path.name)
+        if not match:
+            match = re.search(r"prepare_part_(\d+)\.json$", path.name)
+        if not match:
+            return None
+        return int(match.group(1))
+
+    def _validate_review_parts(self, result_dir: Path) -> None:
+        prepare_parts_dir = result_dir / "prepare_parts"
+        prepare_parts = sorted(prepare_parts_dir.glob("prepare_part_*.json"))
+        if not prepare_parts:
+            raise RuntimeError("未找到 prepare_part 文件，请先执行第 1 步生成 Prepare 并拆分")
+
+        expected_parts = sorted(
+            part_no for part_no in
+            (self._extract_part_no(path) for path in prepare_parts)
+            if part_no is not None
+        )
+        found_parts = sorted(
+            part_no for part_no in
+            (self._extract_part_no(path) for path in self.review_result_files)
+            if part_no is not None
+        )
+
+        missing_parts = [part_no for part_no in expected_parts if part_no not in found_parts]
+        extra_parts = [part_no for part_no in found_parts if part_no not in expected_parts]
+
+        if missing_parts:
+            raise RuntimeError(f"缺少 review_results_part 文件：第 {', '.join(map(str, missing_parts))} 批")
+        if extra_parts:
+            raise RuntimeError(f"发现多余的 review_results_part 文件：第 {', '.join(map(str, extra_parts))} 批")
+
     def _persist_settings(self) -> None:
         save_settings(
             {
@@ -313,7 +371,6 @@ class SqlSemanticWorkflowApp:
                 "top_k": int(self.top_k.get().strip() or "3"),
                 "batch_size": int(self.batch_size.get().strip() or "20"),
                 "result_dir": self.result_dir.get().strip(),
-                "final_excel": self.final_excel.get().strip(),
             }
         )
 
@@ -340,18 +397,21 @@ class SqlSemanticWorkflowApp:
             prepare_path = result_dir / "prepare.json"
             parts_dir = result_dir / "prepare_parts"
 
+            self._set_status("正在读取主文件和对比文件...")
             payload = self._build_prepare_payload()
+            self._set_status("正在写出 prepare.json...")
             workflow.write_json(prepare_path, payload)
+            self._set_status("正在拆分 prepare_part 文件...")
             parts = workflow.split_prepare_payload(payload, int(self.batch_size.get().strip() or "20"))
             parts_dir.mkdir(parents=True, exist_ok=True)
             for part in parts:
                 workflow.write_json(parts_dir / f"prepare_part_{int(part['part_no'])}.json", part)
 
-            self.status_var.set(f"已生成 prepare.json，review_tasks={len(payload['review_tasks'])}，拆分为 {len(parts)} 批")
+            self._set_status(f"已生成 prepare.json，review_tasks={len(payload['review_tasks'])}，拆分为 {len(parts)} 批")
             self.refresh_all_previews()
             messagebox.showinfo("完成", f"已生成 prepare.json，并拆分为 {len(parts)} 批。")
         except Exception as exc:
-            self.status_var.set("生成 prepare 失败")
+            self._set_status("生成 prepare 失败")
             messagebox.showerror("错误", f"{exc}\n\n{traceback.format_exc()}")
 
     def merge_and_finalize(self) -> None:
@@ -360,26 +420,31 @@ class SqlSemanticWorkflowApp:
             result_dir = Path(self.result_dir.get().strip())
             prepare_path = result_dir / "prepare.json"
             review_results_path = result_dir / "review_results.json"
-            final_excel_path = Path(self.final_excel.get().strip())
+            final_excel_path = self._final_excel_path()
 
             if not self.review_result_files:
+                self._set_status("正在自动扫描 review_results_part 文件...")
                 self.auto_detect_review_result_files()
             if not self.review_result_files:
                 raise RuntimeError("未选择 review_results_part 文件")
 
+            self._set_status("正在检查 review_results_part 是否齐全...")
+            self._validate_review_parts(result_dir)
+            self._set_status("正在合并 review_results_part 文件...")
             merged = workflow.merge_review_result_files(self.review_result_files)
             workflow.write_json(review_results_path, {"review_results": merged})
 
+            self._set_status("正在生成最终 Excel...")
             prepared = workflow.load_json(prepare_path)
             payload = workflow.build_finalize_payload(prepared, merged)
             json_output_path = final_excel_path.with_suffix(".json")
             workflow.write_json(json_output_path, payload)
             workflow.export_excel(payload, final_excel_path)
 
-            self.status_var.set(f"已生成 {final_excel_path}")
+            self._set_status(f"已生成 {final_excel_path}")
             messagebox.showinfo("完成", f"已生成最终 Excel：\n{final_excel_path}")
         except Exception as exc:
-            self.status_var.set("合并或导出失败")
+            self._set_status("合并或导出失败")
             messagebox.showerror("错误", f"{exc}\n\n{traceback.format_exc()}")
 
     def refresh_prompt_preview(self) -> None:
@@ -426,6 +491,10 @@ class SqlSemanticWorkflowApp:
             "如果一次回复放不下，请继续输出，不要中断任务，不要改成写脚本。\n"
         )
         self.prompt_text.insert(tk.END, prompt)
+
+    def refresh_and_copy_prompt(self) -> None:
+        self.refresh_prompt_preview()
+        self.copy_prompt()
 
     def copy_prompt(self) -> None:
         prompt = self.prompt_text.get("1.0", tk.END).strip()

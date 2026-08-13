@@ -329,8 +329,44 @@ def coarse_score(base: SqlRecord, target: SqlRecord) -> Dict[str, float]:
     }
 
 
-def choose_candidates(base: SqlRecord, targets: Sequence[SqlRecord], limit: int) -> List[Tuple[SqlRecord, Dict[str, float]]]:
-    ranked = [(target, coarse_score(base, target)) for target in targets]
+def build_target_table_index(targets: Sequence[SqlRecord]) -> Dict[str, List[SqlRecord]]:
+    index: Dict[str, List[SqlRecord]] = {}
+    for target in targets:
+        for table in target.features.tables:
+            index.setdefault(table, []).append(target)
+    return index
+
+
+def prefilter_targets_by_tables(
+    base: SqlRecord,
+    targets: Sequence[SqlRecord],
+    table_index: Dict[str, List[SqlRecord]],
+) -> List[SqlRecord]:
+    if not base.features.tables:
+        return list(targets)
+
+    matched: Dict[int, SqlRecord] = {}
+    for table in base.features.tables:
+        for target in table_index.get(table, []):
+            matched[id(target)] = target
+
+    if matched:
+        return list(matched.values())
+    return list(targets)
+
+
+def choose_candidates(
+    base: SqlRecord,
+    targets: Sequence[SqlRecord],
+    limit: int,
+    table_index: Dict[str, List[SqlRecord]] | None = None,
+) -> List[Tuple[SqlRecord, Dict[str, float]]]:
+    candidate_pool = (
+        prefilter_targets_by_tables(base, targets, table_index)
+        if table_index is not None
+        else list(targets)
+    )
+    ranked = [(target, coarse_score(base, target)) for target in candidate_pool]
     ranked.sort(key=lambda item: item[1]["score"], reverse=True)
     return ranked[:limit]
 
@@ -350,6 +386,17 @@ def expected_result_schema() -> Dict[str, object]:
         "target_line_refs": "对比 SQL 主要依据行号",
         "common_tables": "共同核心表列表",
         "key_differences": "关键差异点列表",
+    }
+
+
+def feature_summary(record: SqlRecord) -> Dict[str, object]:
+    return {
+        "tables": record.features.tables,
+        "join_count": record.features.join_count,
+        "where_conditions": record.features.where_conditions[:15],
+        "group_by": record.features.group_by,
+        "subquery_count": record.features.subquery_count,
+        "union_count": record.features.union_count,
     }
 
 
@@ -410,6 +457,49 @@ def build_review_prompt(base: SqlRecord, target: SqlRecord, coarse: Dict[str, fl
 """.strip()
 
 
+def build_review_prompt_from_task(task: Dict[str, object]) -> str:
+    return f"""
+你是资深 SQL 语义分析专家。你的任务不是看字符串像不像，而是判断两条 SQL 是否属于同一业务 SQL。
+
+请严格按照以下标准判断：
+1. 重点看查询目标、核心表、JOIN 关系、WHERE 主干、GROUP BY 口径、子查询/CTE/UNION 的业务含义是否一致。
+2. 如果只是改写、分页变化、条件下推、历史分表、字段增减、参数字面值差异，通常仍可判为同一业务SQL或可能同一业务SQL。
+3. 如果查询目标、统计口径、核心过滤逻辑明显不同，就判为非同一业务SQL。
+4. 必须引用我提供的带行号 SQL，指出你主要依据的具体行号。
+5. 请用中文输出详细说明。
+
+你必须输出这些字段：
+- judgement
+- confidence
+- semantic_score
+- same_business
+- reasoning
+- join_change
+- where_change
+- group_by_change
+- subquery_change
+- base_line_refs
+- target_line_refs
+- common_tables
+- key_differences
+
+候选粗召回信息：
+{json.dumps(task["coarse"], ensure_ascii=False)}
+
+主文件 SQL 结构特征：
+{json.dumps(task["base_features"], ensure_ascii=False)}
+
+对比文件 SQL 结构特征：
+{json.dumps(task["target_features"], ensure_ascii=False)}
+
+主文件 SQL（带行号）：
+{numbered_sql(str(task["base_sql"]))}
+
+对比文件 SQL（带行号）：
+{numbered_sql(str(task["target_sql"]))}
+""".strip()
+
+
 def build_prepare_payload(
     base_path: Path,
     target_path: Path,
@@ -423,9 +513,10 @@ def build_prepare_payload(
     review_tasks: List[Dict[str, object]] = []
     candidate_rows: List[Dict[str, object]] = []
     pair_seq = 0
+    target_table_index = build_target_table_index(target_records)
 
     for base in base_records:
-        ranked = choose_candidates(base, target_records, max(1, top_k))
+        ranked = choose_candidates(base, target_records, max(1, top_k), target_table_index)
         for rank, (target, coarse) in enumerate(ranked, start=1):
             pair_seq += 1
             pair_id = f"pair_{pair_seq}_base_{base.source_row}_target_{target.source_row}_rank_{rank}"
@@ -436,10 +527,11 @@ def build_prepare_payload(
                     "base_id": base.meta.get(base_id_column or "", ""),
                     "target_row": target.source_row,
                     "candidate_rank": rank,
-                    "prompt": build_review_prompt(base, target, coarse),
-                    "expected_result_schema": expected_result_schema(),
                     "base_sql": base.sql,
                     "target_sql": target.sql,
+                    "base_features": feature_summary(base),
+                    "target_features": feature_summary(target),
+                    "coarse": coarse,
                 }
             )
             candidate_rows.append(
@@ -486,7 +578,13 @@ def split_prepare_payload(prepared: Dict[str, object], batch_size: int) -> List[
     parts: List[Dict[str, object]] = []
 
     for start in range(0, len(review_tasks), batch_size):
-        chunk_tasks = review_tasks[start:start + batch_size]
+        source_tasks = review_tasks[start:start + batch_size]
+        chunk_tasks: List[Dict[str, object]] = []
+        for task in source_tasks:
+            task_copy = dict(task)
+            task_copy["prompt"] = build_review_prompt_from_task(task_copy)
+            task_copy["expected_result_schema"] = expected_result_schema()
+            chunk_tasks.append(task_copy)
         chunk_pair_ids = {str(item["pair_id"]) for item in chunk_tasks}
         chunk_candidates = [candidate_map[pair_id] for pair_id in chunk_pair_ids if pair_id in candidate_map]
         part_no = len(parts) + 1
