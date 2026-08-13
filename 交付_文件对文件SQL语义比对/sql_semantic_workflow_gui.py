@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import traceback
 from pathlib import Path
 from typing import List
@@ -34,7 +35,7 @@ class SqlSemanticWorkflowApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("SQL 语义比对工作流")
-        self.root.geometry("1040x550")
+        self.root.geometry("600x800")
         self.settings = load_settings()
 
         self.base_file = tk.StringVar(value=self.settings.get("base_file", ""))
@@ -49,6 +50,9 @@ class SqlSemanticWorkflowApp:
         self.target_columns: List[str] = []
 
         self.review_result_files: List[Path] = []
+        self.is_busy = False
+        self.action_buttons: List[ttk.Button] = []
+        self.secondary_buttons: List[ttk.Button] = []
 
         self._build_ui()
         self._load_saved_column_options()
@@ -73,20 +77,31 @@ class SqlSemanticWorkflowApp:
         actions = ttk.LabelFrame(frame, text="操作", padding=10)
         actions.pack(fill=tk.X, pady=(12, 0))
 
-        ttk.Button(actions, text="1. 生成 Prepare 并拆分", command=self.generate_prepare_and_split).grid(row=0, column=0, padx=6, pady=6, sticky="w")
-        ttk.Button(actions, text="2. 刷新并复制提示词", command=self.refresh_and_copy_prompt).grid(row=0, column=1, padx=6, pady=6, sticky="w")
-        ttk.Button(actions, text="3. 合并 review_results_part 生成 Excel", command=self.merge_and_finalize).grid(row=0, column=2, padx=6, pady=6, sticky="w")
+        prepare_button = ttk.Button(actions, text="1. 生成 Prepare 并拆分", command=self.generate_prepare_and_split)
+        prepare_button.grid(row=0, column=0, padx=6, pady=6, sticky="w")
+        prompt_button = ttk.Button(actions, text="2. 刷新并复制提示词", command=self.refresh_and_copy_prompt)
+        prompt_button.grid(row=0, column=1, padx=6, pady=6, sticky="w")
+        merge_button = ttk.Button(actions, text="3. 合并 review_results_part 生成 Excel", command=self.merge_and_finalize)
+        merge_button.grid(row=0, column=2, padx=6, pady=6, sticky="w")
+        self.action_buttons.extend([prepare_button, prompt_button, merge_button])
         second_row = ttk.Frame(actions)
-        second_row.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
-        ttk.Button(second_row, text="打开结果目录", command=self.open_result_dir).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(second_row, text="打开最终 Excel", command=self.open_final_excel).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(second_row, text="复制 Prepare 命令", command=self.copy_prepare_command).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(second_row, text="复制 Finalize 命令", command=self.copy_finalize_command).pack(side=tk.LEFT)
+        second_row.grid(row=1, column=0, columnspan=3, sticky="w", padx=6, pady=(6, 0))
+        open_dir_button = ttk.Button(second_row, text="打开结果目录", command=self.open_result_dir)
+        open_dir_button.pack(side=tk.LEFT, padx=(0, 8))
+        open_excel_button = ttk.Button(second_row, text="打开最终 Excel", command=self.open_final_excel)
+        open_excel_button.pack(side=tk.LEFT, padx=(0, 8))
+        copy_prepare_button = ttk.Button(second_row, text="复制 Prepare 命令", command=self.copy_prepare_command)
+        copy_prepare_button.pack(side=tk.LEFT, padx=(0, 8))
+        copy_finalize_button = ttk.Button(second_row, text="复制 Finalize 命令", command=self.copy_finalize_command)
+        copy_finalize_button.pack(side=tk.LEFT)
+        self.secondary_buttons.extend([open_dir_button, open_excel_button, copy_prepare_button, copy_finalize_button])
 
         info = ttk.LabelFrame(frame, text="状态", padding=10)
         info.pack(fill=tk.X, pady=(12, 0))
         self.status_var = tk.StringVar(value="待开始")
         ttk.Label(info, textvariable=self.status_var).pack(anchor="w")
+        self.progress = ttk.Progressbar(info, mode="indeterminate")
+        self.progress.pack(fill=tk.X, pady=(8, 0))
 
         command_frame = ttk.LabelFrame(frame, text="命令预览", padding=10)
         command_frame.pack(fill=tk.X, pady=(12, 0))
@@ -223,6 +238,43 @@ class SqlSemanticWorkflowApp:
     def _set_status(self, message: str) -> None:
         self.status_var.set(message)
         self.root.update_idletasks()
+
+    def _set_busy(self, busy: bool, message: str | None = None) -> None:
+        self.is_busy = busy
+        state = tk.DISABLED if busy else tk.NORMAL
+        for button in self.action_buttons:
+            button.config(state=state)
+        if busy:
+            self.progress.start(10)
+        else:
+            self.progress.stop()
+        if message is not None:
+            self._set_status(message)
+
+    def _run_in_background(self, worker, start_message: str, success_message: str, success_detail: str) -> None:
+        if self.is_busy:
+            return
+
+        self._set_busy(True, start_message)
+
+        def job() -> None:
+            try:
+                detail = worker()
+                self.root.after(0, lambda: self._background_success(success_message, success_detail.format(detail=detail)))
+            except Exception as exc:
+                error_text = f"{exc}\n\n{traceback.format_exc()}"
+                self.root.after(0, lambda: self._background_error(error_text))
+
+        threading.Thread(target=job, daemon=True).start()
+
+    def _background_success(self, status_message: str, dialog_message: str) -> None:
+        self._set_busy(False, status_message)
+        self.refresh_all_previews()
+        messagebox.showinfo("完成", dialog_message)
+
+    def _background_error(self, error_text: str) -> None:
+        self._set_busy(False, "执行失败")
+        messagebox.showerror("错误", error_text)
 
     def _copy_text(self, text: str, success_message: str) -> None:
         self.root.clipboard_clear()
@@ -383,28 +435,29 @@ class SqlSemanticWorkflowApp:
         )
 
     def generate_prepare_and_split(self) -> None:
-        try:
+        def worker() -> str:
             self._persist_settings()
             result_dir = Path(self.result_dir.get().strip())
             prepare_path = result_dir / "prepare.json"
             parts_dir = result_dir / "prepare_parts"
 
-            self._set_status("正在读取主文件和对比文件...")
+            self.root.after(0, lambda: self._set_status("正在读取主文件和对比文件..."))
             payload = self._build_prepare_payload()
-            self._set_status("正在写出 prepare.json...")
+            self.root.after(0, lambda: self._set_status("正在写出 prepare.json..."))
             workflow.write_json(prepare_path, payload)
-            self._set_status("正在拆分 prepare_part 文件...")
+            self.root.after(0, lambda: self._set_status("正在拆分 prepare_part 文件..."))
             parts = workflow.split_prepare_payload(payload, int(self.batch_size.get().strip() or "20"))
             parts_dir.mkdir(parents=True, exist_ok=True)
             for part in parts:
                 workflow.write_json(parts_dir / f"prepare_part_{int(part['part_no'])}.json", part)
+            return f"review_tasks={len(payload['review_tasks'])}，拆分为 {len(parts)} 批"
 
-            self._set_status(f"已生成 prepare.json，review_tasks={len(payload['review_tasks'])}，拆分为 {len(parts)} 批")
-            self.refresh_all_previews()
-            messagebox.showinfo("完成", f"已生成 prepare.json，并拆分为 {len(parts)} 批。")
-        except Exception as exc:
-            self._set_status("生成 prepare 失败")
-            messagebox.showerror("错误", f"{exc}\n\n{traceback.format_exc()}")
+        self._run_in_background(
+            worker,
+            "正在生成 Prepare，请稍候...",
+            "已生成 prepare.json",
+            "已生成 prepare.json，{detail}。",
+        )
 
     def merge_and_finalize(self) -> None:
         try:
