@@ -9,7 +9,7 @@ on:
     paths:
       - ".github/workflows/build-sql-semantic-workflow-exe.yml"
       - "requirements.txt"
-      - "交付_文件对文件SQL语义比对/**"
+      - "交付_exe版/**"
 
 jobs:
   build:
@@ -32,11 +32,11 @@ jobs:
       - name: Build EXE
         shell: cmd
         run: |
-          cd /d "交付_文件对文件SQL语义比对"
+          cd /d "交付_exe版"
           pyinstaller --noconfirm --clean --onefile --windowed --name SQL语义比对工作流 sql_semantic_workflow_gui.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: SQL语义比对工作流-Windows-EXE
-          path: 交付_文件对文件SQL语义比对/dist/SQL语义比对工作流.exe
+          path: 交付_exe版/dist/SQL语义比对工作流.exe

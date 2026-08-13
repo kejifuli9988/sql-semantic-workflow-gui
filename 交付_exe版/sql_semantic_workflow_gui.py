@@ -100,8 +100,6 @@ class SqlSemanticWorkflowApp:
         info.pack(fill=tk.X, pady=(12, 0))
         self.status_var = tk.StringVar(value="待开始")
         ttk.Label(info, textvariable=self.status_var).pack(anchor="w")
-        self.progress = ttk.Progressbar(info, mode="indeterminate")
-        self.progress.pack(fill=tk.X, pady=(8, 0))
 
         command_frame = ttk.LabelFrame(frame, text="命令预览", padding=10)
         command_frame.pack(fill=tk.X, pady=(12, 0))
@@ -244,10 +242,6 @@ class SqlSemanticWorkflowApp:
         state = tk.DISABLED if busy else tk.NORMAL
         for button in self.action_buttons:
             button.config(state=state)
-        if busy:
-            self.progress.start(10)
-        else:
-            self.progress.stop()
         if message is not None:
             self._set_status(message)
 
