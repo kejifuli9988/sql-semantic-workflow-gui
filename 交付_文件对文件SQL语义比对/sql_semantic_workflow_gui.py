@@ -34,7 +34,7 @@ class SqlSemanticWorkflowApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("SQL 语义比对工作流")
-        self.root.geometry("1040x800")
+        self.root.geometry("1040x550")
         self.settings = load_settings()
 
         self.base_file = tk.StringVar(value=self.settings.get("base_file", ""))
@@ -76,10 +76,12 @@ class SqlSemanticWorkflowApp:
         ttk.Button(actions, text="1. 生成 Prepare 并拆分", command=self.generate_prepare_and_split).grid(row=0, column=0, padx=6, pady=6, sticky="w")
         ttk.Button(actions, text="2. 刷新并复制提示词", command=self.refresh_and_copy_prompt).grid(row=0, column=1, padx=6, pady=6, sticky="w")
         ttk.Button(actions, text="3. 合并 review_results_part 生成 Excel", command=self.merge_and_finalize).grid(row=0, column=2, padx=6, pady=6, sticky="w")
-        ttk.Button(actions, text="打开结果目录", command=self.open_result_dir).grid(row=1, column=0, padx=6, pady=6, sticky="w")
-        ttk.Button(actions, text="打开最终 Excel", command=self.open_final_excel).grid(row=1, column=1, padx=6, pady=6, sticky="w")
-        ttk.Button(actions, text="复制 Prepare 命令", command=self.copy_prepare_command).grid(row=1, column=2, padx=6, pady=6, sticky="w")
-        ttk.Button(actions, text="复制 Finalize 命令", command=self.copy_finalize_command).grid(row=1, column=3, padx=6, pady=6, sticky="w")
+        second_row = ttk.Frame(actions)
+        second_row.grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        ttk.Button(second_row, text="打开结果目录", command=self.open_result_dir).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(second_row, text="打开最终 Excel", command=self.open_final_excel).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(second_row, text="复制 Prepare 命令", command=self.copy_prepare_command).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(second_row, text="复制 Finalize 命令", command=self.copy_finalize_command).pack(side=tk.LEFT)
 
         info = ttk.LabelFrame(frame, text="状态", padding=10)
         info.pack(fill=tk.X, pady=(12, 0))
