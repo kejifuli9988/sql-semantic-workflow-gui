@@ -16,6 +16,166 @@ import compare_sql_files as workflow
 
 
 SETTINGS_FILE = Path(__file__).with_name("sql_semantic_workflow_gui_settings.json")
+DEFAULT_SKILL_MD = """---
+name: sql-semantic-file-to-file
+description: 用于配合 SQL 语义比对 exe/GUI 工具工作。exe 负责生成 prepare、拆分批次、合并 review 结果并输出最终 Excel；智能体只负责根据 prepare_part 做 SQL 语义判断并输出 review_results_part。
+---
+
+# 文件对文件 SQL 语义比对 EXE 协同版
+
+这是 `exe版` 配套 skill。
+
+这一版不是让智能体自己重读 Excel、自己写额外脚本、自己生成最终 Excel，而是和本地 GUI / exe 分工协作：
+
+- exe / GUI 负责：
+  - 读取主文件和对比文件
+  - 自动识别列名
+  - 生成 `prepare.json`
+  - 拆分 `prepare_part_x.json`
+  - 合并 `review_results_part_x.json`
+  - 生成最终 Excel
+- 智能体负责：
+  - 读取 `prepare_part_x.json`
+  - 对其中每个 `pair_id` 做 SQL 语义判断
+  - 输出对应的 `review_results_part_x.json`
+
+## 智能体只做什么
+
+只做语义评审，不做这些事：
+- 不直接读取 Excel
+- 不自己做候选召回
+- 不自己重新生成 prepare
+- 不自己写额外 Python 脚本
+- 不自己生成最终 Excel
+
+## 智能体输入
+
+输入来自 exe 生成的 `prepare_part_x.json`。
+
+每个 part 里已经包含：
+- 主 SQL
+- 候选 SQL
+- 结构特征
+- 带行号 SQL
+- 需要返回的字段说明
+
+## 智能体输出
+
+每个 `prepare_part_x.json` 对应输出一个：
+- `review_results_part_x.json`
+
+每条结果必须包含：
+- `pair_id`
+- `judgement`
+- `confidence`
+- `semantic_score`
+- `same_business`
+- `reasoning`
+- `join_change`
+- `where_change`
+- `group_by_change`
+- `subquery_change`
+- `base_line_refs`
+- `target_line_refs`
+- `common_tables`
+- `key_differences`
+
+## 判定原则
+
+必须按业务语义判断，不按字符串相似度判断。
+
+重点看：
+- 查询目标
+- 核心表
+- JOIN
+- WHERE / 过滤条件
+- GROUP BY / 聚合口径
+- 子查询 / CTE / UNION
+
+## 推荐窗口输入模板
+
+```text
+请按 prepare_part 分批处理 SQL 语义比对任务。
+不要重新读取 Excel，不要自己生成脚本，不要改 pair_id。
+请直接读取结果目录下的 prepare_part 文件，并为每个 prepare_part 生成对应的 review_results_part JSON。
+完成后返回：已生成了哪些 review_results_part 文件。
+```
+"""
+DEFAULT_ROLE_MD = """# 智能体角色定义
+
+## 角色名称
+
+SQL 语义评审专家
+
+## 角色定位
+
+你在 `exe版` 工作流中，只负责 SQL 语义评审这一段。
+
+本地 exe / GUI 已经完成了：
+- 读取 Excel
+- 识别列名
+- 候选召回
+- prepare 拆分
+
+你不需要再重复做这些步骤。
+
+## 你的职责
+
+1. 读取 `prepare_part_x.json`
+2. 逐条处理其中的 `pair_id`
+3. 判断主 SQL 和候选 SQL 是否属于同一业务 SQL
+4. 分析 JOIN、WHERE、GROUP BY、子查询、CTE、UNION、过滤条件变化
+5. 标注依据行号
+6. 输出 `review_results_part_x.json`
+
+## 你不要做的事
+
+- 不要重新读取 Excel
+- 不要自己候选召回
+- 不要自己生成 prepare
+- 不要自己写额外脚本
+- 不要改写 `pair_id`
+- 不要自己生成最终 Excel
+
+## 判断原则
+
+按业务语义判断，不按字符串相似度判断。
+
+重点分析：
+- 查询目标是否一致
+- 核心表是否一致
+- JOIN 是否表达同一业务逻辑
+- WHERE 主干是否一致
+- GROUP BY / 聚合口径是否一致
+- 子查询、CTE、UNION 是否只是写法变化
+
+## 输出字段
+
+必须输出：
+- `pair_id`
+- `judgement`
+- `confidence`
+- `semantic_score`
+- `same_business`
+- `reasoning`
+- `join_change`
+- `where_change`
+- `group_by_change`
+- `subquery_change`
+- `base_line_refs`
+- `target_line_refs`
+- `common_tables`
+- `key_differences`
+
+## 输出要求
+
+- 一个 `prepare_part` 对应一个 `review_results_part`
+- JSON 必须完整
+- 不要漏结果
+- 不要重复 `pair_id`
+- 用中文写理由
+- 行号必须可追溯
+"""
 
 
 def load_settings() -> dict:
@@ -86,15 +246,20 @@ class SqlSemanticWorkflowApp:
         self.action_buttons.extend([prepare_button, prompt_button, merge_button])
         second_row = ttk.Frame(actions)
         second_row.grid(row=1, column=0, columnspan=3, sticky="w", padx=6, pady=(6, 0))
+        export_skill_button = ttk.Button(second_row, text="导出 skill.md", command=self.export_skill_md)
+        export_skill_button.pack(side=tk.LEFT, padx=(0, 8))
+        copy_role_button = ttk.Button(second_row, text="复制智能体角色文案", command=self.copy_role_md)
+        copy_role_button.pack(side=tk.LEFT, padx=(0, 8))
         open_dir_button = ttk.Button(second_row, text="打开结果目录", command=self.open_result_dir)
         open_dir_button.pack(side=tk.LEFT, padx=(0, 8))
         open_excel_button = ttk.Button(second_row, text="打开最终 Excel", command=self.open_final_excel)
-        open_excel_button.pack(side=tk.LEFT, padx=(0, 8))
-        copy_prepare_button = ttk.Button(second_row, text="复制 Prepare 命令", command=self.copy_prepare_command)
-        copy_prepare_button.pack(side=tk.LEFT, padx=(0, 8))
-        copy_finalize_button = ttk.Button(second_row, text="复制 Finalize 命令", command=self.copy_finalize_command)
-        copy_finalize_button.pack(side=tk.LEFT)
-        self.secondary_buttons.extend([open_dir_button, open_excel_button, copy_prepare_button, copy_finalize_button])
+        open_excel_button.pack(side=tk.LEFT)
+        self.secondary_buttons.extend([
+            export_skill_button,
+            copy_role_button,
+            open_dir_button,
+            open_excel_button,
+        ])
 
         info = ttk.LabelFrame(frame, text="状态", padding=10)
         info.pack(fill=tk.X, pady=(12, 0))
@@ -277,11 +442,34 @@ class SqlSemanticWorkflowApp:
         self.status_var.set(success_message)
         messagebox.showinfo("完成", success_message)
 
-    def copy_prepare_command(self) -> None:
-        self._copy_text(self._prepare_command(), "Prepare 命令已复制")
+    def _read_packaged_text(self, filename: str, fallback: str) -> str:
+        candidate = Path(__file__).with_name(filename)
+        try:
+            if candidate.exists():
+                return candidate.read_text(encoding="utf-8")
+        except Exception:
+            pass
+        return fallback
 
-    def copy_finalize_command(self) -> None:
-        self._copy_text(self._finalize_command(), "Finalize 命令已复制")
+    def export_skill_md(self) -> None:
+        suggested_path = Path(self.result_dir.get().strip() or ".") / "skill.md"
+        output_path = filedialog.asksaveasfilename(
+            title="导出 skill.md",
+            initialfile=suggested_path.name,
+            initialdir=str(suggested_path.parent),
+            defaultextension=".md",
+            filetypes=[("Markdown Files", "*.md"), ("All Files", "*.*")],
+        )
+        if not output_path:
+            return
+        content = self._read_packaged_text("skill.md", DEFAULT_SKILL_MD)
+        Path(output_path).write_text(content, encoding="utf-8")
+        self._set_status(f"已导出 skill.md：{output_path}")
+        messagebox.showinfo("完成", f"已导出 skill.md：\n{output_path}")
+
+    def copy_role_md(self) -> None:
+        content = self._read_packaged_text("智能体角色定义.md", DEFAULT_ROLE_MD).strip()
+        self._copy_text(content, "智能体角色文案已复制")
 
     def _open_path(self, path: Path) -> None:
         if not path.exists():
