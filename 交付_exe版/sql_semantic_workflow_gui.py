@@ -228,6 +228,9 @@ class SqlSemanticWorkflowApp:
         self.target_display_column_vars: Dict[str, tk.BooleanVar] = {}
         self.saved_base_display_columns = list(self.settings.get("base_display_columns", []))
         self.saved_target_display_columns = list(self.settings.get("target_display_columns", []))
+        self.active_display_popup: tk.Toplevel | None = None
+        self.active_display_popup_kind: str | None = None
+        self.display_popup_click_bind_id: str | None = None
 
         self.review_result_files: List[Path] = []
         self.is_busy = False
@@ -254,7 +257,7 @@ class SqlSemanticWorkflowApp:
             pass
         default_font = ("Microsoft YaHei UI", 10)
         text_font = ("Microsoft YaHei UI", 10)
-        title_font = ("Microsoft YaHei UI", 18, "bold")
+        title_font = ("Microsoft YaHei UI", 16, "bold")
         subtitle_font = ("Microsoft YaHei UI", 9)
         section_font = ("Microsoft YaHei UI", 11, "bold")
         code_font = ("Consolas", 10)
@@ -298,6 +301,21 @@ class SqlSemanticWorkflowApp:
             foreground=[("active", self.text_primary), ("!disabled", self.text_primary)],
             bordercolor=[("active", self.primary), ("!disabled", self.border_color)],
         )
+        style.configure(
+            "White.TButton",
+            background="#FFFFFF",
+            foreground=self.text_primary,
+            bordercolor=self.border_color,
+            relief="solid",
+            padding=(8, 5),
+            anchor="w",
+        )
+        style.map(
+            "White.TButton",
+            background=[("active", "#FFFFFF"), ("!disabled", "#FFFFFF")],
+            foreground=[("active", self.text_primary), ("!disabled", self.text_primary)],
+            bordercolor=[("active", self.primary), ("!disabled", self.border_color)],
+        )
         style.configure("TNotebook", background=self.card_bg, borderwidth=0, tabmargins=(0, 0, 0, 0))
         style.configure("TNotebook.Tab", padding=(10, 4), font=("Microsoft YaHei UI", 10))
         style.map("TNotebook.Tab", foreground=[("selected", self.primary)], background=[("selected", self.card_bg)])
@@ -305,8 +323,8 @@ class SqlSemanticWorkflowApp:
 
     def _set_default_window(self) -> None:
         width = 720
-        height = 680
-        self.root.minsize(680, 620)
+        height = 790
+        self.root.minsize(680, 720)
         self.root.geometry(f"{width}x{height}")
         self.root.update_idletasks()
         screen_w = self.root.winfo_screenwidth()
@@ -407,26 +425,26 @@ class SqlSemanticWorkflowApp:
     def _build_flow_section(self, body) -> None:
         flow = ttk.Frame(body, style="CardBody.TFrame")
         flow.pack()
-        prepare_button = ttk.Button(flow, text="① 生成预处理文件", style="Primary.TButton", command=self.generate_prepare_and_split)
+        prepare_button = ttk.Button(flow, text="① 生成预处理文件", style="Primary.TButton", command=self.generate_prepare_and_split, takefocus=False)
         prepare_button.grid(row=0, column=0)
         ttk.Label(flow, text="→", style="SectionTitle.TLabel").grid(row=0, column=1, padx=8)
-        prompt_button = ttk.Button(flow, text="② 复制 AI 提示词", style="Primary.TButton", command=self.refresh_and_copy_prompt)
+        prompt_button = ttk.Button(flow, text="② 复制 AI 提示词", style="Primary.TButton", command=self.refresh_and_copy_prompt, takefocus=False)
         prompt_button.grid(row=0, column=2)
         ttk.Label(flow, text="→", style="SectionTitle.TLabel").grid(row=0, column=3, padx=8)
-        merge_button = ttk.Button(flow, text="③ 合并生成 Excel", style="Primary.TButton", command=self.merge_and_finalize)
+        merge_button = ttk.Button(flow, text="③ 合并生成 Excel", style="Primary.TButton", command=self.merge_and_finalize, takefocus=False)
         merge_button.grid(row=0, column=4)
         self.action_buttons.extend([prepare_button, prompt_button, merge_button])
 
     def _build_quick_actions(self, body) -> None:
         row = ttk.Frame(body, style="CardBody.TFrame")
         row.pack()
-        export_skill_button = ttk.Button(row, text="📄 导出 Skill", style="Secondary.TButton", command=self.export_skill_md)
+        export_skill_button = ttk.Button(row, text="📄 导出 Skill", style="Secondary.TButton", command=self.export_skill_md, takefocus=False)
         export_skill_button.grid(row=0, column=0)
-        copy_role_button = ttk.Button(row, text="🧠 复制智能体角色文案", style="Secondary.TButton", command=self.copy_role_md)
+        copy_role_button = ttk.Button(row, text="🧠 复制智能体角色文案", style="Secondary.TButton", command=self.copy_role_md, takefocus=False)
         copy_role_button.grid(row=0, column=1, padx=(8, 0))
-        open_dir_button = ttk.Button(row, text="📁 打开结果目录", style="Secondary.TButton", command=self.open_result_dir)
+        open_dir_button = ttk.Button(row, text="📁 打开结果目录", style="Secondary.TButton", command=self.open_result_dir, takefocus=False)
         open_dir_button.grid(row=0, column=2, padx=(8, 0))
-        open_excel_button = ttk.Button(row, text="📗 打开最终 Excel", style="Accent.TButton", command=self.open_final_excel)
+        open_excel_button = ttk.Button(row, text="📗 打开最终 Excel", style="Accent.TButton", command=self.open_final_excel, takefocus=False)
         open_excel_button.grid(row=0, column=3, padx=(8, 0))
         self.secondary_buttons.extend([export_skill_button, copy_role_button, open_dir_button, open_excel_button])
 
@@ -494,10 +512,132 @@ class SqlSemanticWorkflowApp:
             spacer.grid_propagate(False)
         return text
 
+    def _toggle_display_popup(self, kind: str) -> None:
+        if self.active_display_popup_kind == kind and self.active_display_popup is not None:
+            self._close_display_popup()
+            return
+        self._close_display_popup()
+
+        if kind == "base":
+            button = self.base_display_menu_button
+            options = list(self.base_display_column_vars.items())
+            title = "主文件显示列"
+        else:
+            button = self.target_display_menu_button
+            options = list(self.target_display_column_vars.items())
+            title = "对比文件显示列"
+
+        if not options:
+            return
+
+        popup = tk.Toplevel(self.root)
+        popup.withdraw()
+        popup.overrideredirect(True)
+        popup.configure(bg=self.border_color)
+
+        outer = tk.Frame(popup, bg=self.border_color, bd=0, highlightthickness=0)
+        outer.pack(fill=tk.BOTH, expand=True)
+        inner = tk.Frame(outer, bg=self.card_bg, bd=0, highlightthickness=0)
+        inner.pack(fill=tk.BOTH, expand=True, padx=1, pady=1)
+
+        title_label = tk.Label(
+            inner,
+            text=title,
+            bg=self.card_bg,
+            fg=self.text_secondary,
+            font=("Microsoft YaHei UI", 9),
+            anchor="w",
+        )
+        title_label.pack(fill=tk.X, padx=10, pady=(8, 4))
+
+        canvas = tk.Canvas(inner, bg=self.card_bg, highlightthickness=0, bd=0)
+        scrollbar = ttk.Scrollbar(inner, orient=tk.VERTICAL, command=canvas.yview)
+        list_frame = tk.Frame(canvas, bg=self.card_bg, bd=0, highlightthickness=0)
+        list_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all")),
+        )
+        canvas.create_window((0, 0), window=list_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 0), pady=(0, 6))
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 6), pady=(0, 6))
+
+        for column, var in options:
+            check = tk.Checkbutton(
+                list_frame,
+                text=column,
+                variable=var,
+                command=self._toggle_base_display_column if kind == "base" else self._toggle_target_display_column,
+                anchor="w",
+                justify=tk.LEFT,
+                bg=self.card_bg,
+                activebackground=self.primary_soft,
+                fg=self.text_primary,
+                selectcolor="#FFFFFF",
+                highlightthickness=0,
+                bd=0,
+                padx=6,
+                pady=3,
+                takefocus=0,
+            )
+            check.pack(fill=tk.X, anchor="w")
+
+        self.root.update_idletasks()
+        button.update_idletasks()
+        popup_width = max(button.winfo_width(), 260)
+        popup_height = min(240, max(110, 32 + len(options) * 28))
+        x = button.winfo_rootx()
+        y = button.winfo_rooty() + button.winfo_height() + 2
+        popup.geometry(f"{popup_width}x{popup_height}+{x}+{y}")
+        canvas.configure(width=popup_width - 22, height=popup_height - 34)
+
+        self.active_display_popup = popup
+        self.active_display_popup_kind = kind
+        popup.deiconify()
+
+        self.display_popup_click_bind_id = self.root.bind("<Button-1>", self._handle_global_click_for_popup, add="+")
+
+    def _close_display_popup(self) -> None:
+        if self.display_popup_click_bind_id:
+            self.root.unbind("<Button-1>", self.display_popup_click_bind_id)
+            self.display_popup_click_bind_id = None
+        if self.active_display_popup is not None:
+            try:
+                self.active_display_popup.destroy()
+            except tk.TclError:
+                pass
+        self.active_display_popup = None
+        self.active_display_popup_kind = None
+
+    def _widget_is_descendant_of(self, widget, ancestor) -> bool:
+        current = widget
+        while current is not None:
+            if current == ancestor:
+                return True
+            try:
+                parent_name = current.winfo_parent()
+                if not parent_name:
+                    return False
+                current = current.nametowidget(parent_name)
+            except Exception:
+                return False
+        return False
+
+    def _handle_global_click_for_popup(self, event) -> None:
+        if self.active_display_popup is None:
+            return
+        button = self.base_display_menu_button if self.active_display_popup_kind == "base" else self.target_display_menu_button
+        widget = event.widget
+        if self._widget_is_descendant_of(widget, self.active_display_popup):
+            return
+        if self._widget_is_descendant_of(widget, button):
+            return
+        self._close_display_popup()
+
     def _row_file(self, parent, row: int, label: str, var: tk.StringVar, cmd, directory: bool = False, save: bool = False) -> None:
         ttk.Label(parent, text=label, style="FieldLabel.TLabel").grid(row=row, column=0, sticky="w", padx=(0, 8), pady=3)
         ttk.Entry(parent, textvariable=var).grid(row=row, column=1, columnspan=3, sticky="ew", pady=3)
-        ttk.Button(parent, text="选择", width=5, style="Secondary.TButton", command=cmd).grid(row=row, column=4, padx=(6, 0), pady=3, sticky="ew")
+        ttk.Button(parent, text="选择", width=5, style="Secondary.TButton", command=cmd, takefocus=False).grid(row=row, column=4, padx=(6, 0), pady=3, sticky="ew")
 
     def _row_dual_text(
         self,
@@ -524,19 +664,27 @@ class SqlSemanticWorkflowApp:
         left_wrapper = ttk.Frame(parent)
         left_wrapper.grid(row=row, column=1, sticky="ew", pady=3)
         left_wrapper.columnconfigure(0, weight=1)
-        self.base_display_menu_button = ttk.Menubutton(left_wrapper, textvariable=self.base_display_columns_summary, style="White.TMenubutton")
+        self.base_display_menu_button = ttk.Button(
+            left_wrapper,
+            textvariable=self.base_display_columns_summary,
+            style="White.TButton",
+            command=lambda: self._toggle_display_popup("base"),
+            takefocus=False,
+        )
         self.base_display_menu_button.grid(row=0, column=0, sticky="ew")
-        self.base_display_menu = tk.Menu(self.base_display_menu_button, tearoff=False)
-        self.base_display_menu_button["menu"] = self.base_display_menu
 
         ttk.Label(parent, text=right_label, style="FieldLabel.TLabel").grid(row=row, column=2, sticky="w", padx=(8, 8), pady=3)
         right_wrapper = ttk.Frame(parent)
         right_wrapper.grid(row=row, column=3, columnspan=2, sticky="ew", pady=3)
         right_wrapper.columnconfigure(0, weight=1)
-        self.target_display_menu_button = ttk.Menubutton(right_wrapper, textvariable=self.target_display_columns_summary, style="White.TMenubutton")
+        self.target_display_menu_button = ttk.Button(
+            right_wrapper,
+            textvariable=self.target_display_columns_summary,
+            style="White.TButton",
+            command=lambda: self._toggle_display_popup("target"),
+            takefocus=False,
+        )
         self.target_display_menu_button.grid(row=0, column=0, sticky="ew")
-        self.target_display_menu = tk.Menu(self.target_display_menu_button, tearoff=False)
-        self.target_display_menu_button["menu"] = self.target_display_menu
 
     def _row_dual_select(
         self,
@@ -548,10 +696,10 @@ class SqlSemanticWorkflowApp:
         right_var: tk.StringVar,
     ) -> tuple[ttk.Combobox, ttk.Combobox]:
         ttk.Label(parent, text=left_label, style="FieldLabel.TLabel").grid(row=row, column=0, sticky="w", padx=(0, 8), pady=3)
-        left_combo = ttk.Combobox(parent, textvariable=left_var, width=22, state="readonly")
+        left_combo = ttk.Combobox(parent, textvariable=left_var, width=22, state="readonly", takefocus=False)
         left_combo.grid(row=row, column=1, sticky="ew", pady=3)
         ttk.Label(parent, text=right_label, style="FieldLabel.TLabel").grid(row=row, column=2, sticky="w", padx=(8, 8), pady=3)
-        right_combo = ttk.Combobox(parent, textvariable=right_var, width=22, state="readonly")
+        right_combo = ttk.Combobox(parent, textvariable=right_var, width=22, state="readonly", takefocus=False)
         right_combo.grid(row=row, column=3, columnspan=2, sticky="ew", pady=3)
         return left_combo, right_combo
 
@@ -815,8 +963,6 @@ class SqlSemanticWorkflowApp:
         selected = self.get_selected_base_display_columns()
         if not selected:
             self.base_display_columns_summary.set("未选择显示列")
-        elif len(selected) <= 3:
-            self.base_display_columns_summary.set("、".join(selected))
         else:
             self.base_display_columns_summary.set(f"已选择 {len(selected)} 列")
 
@@ -824,8 +970,6 @@ class SqlSemanticWorkflowApp:
         selected = self.get_selected_target_display_columns()
         if not selected:
             self.target_display_columns_summary.set("未选择显示列")
-        elif len(selected) <= 3:
-            self.target_display_columns_summary.set("、".join(selected))
         else:
             self.target_display_columns_summary.set(f"已选择 {len(selected)} 列")
 
@@ -853,20 +997,17 @@ class SqlSemanticWorkflowApp:
             for column in self.base_columns
             if column and column != current_sql
         ]
-        self.base_display_menu.delete(0, tk.END)
         self.base_display_column_vars = {}
         for column in selectable_columns:
             var = tk.BooleanVar(value=column in selected_before)
             self.base_display_column_vars[column] = var
-            self.base_display_menu.add_checkbutton(
-                label=column,
-                variable=var,
-                command=self._toggle_base_display_column,
-            )
         self.saved_base_display_columns = self.get_selected_base_display_columns()
         self._update_base_display_columns_summary()
         if not selectable_columns:
             self.base_display_columns_summary.set("无可选显示列")
+        if self.active_display_popup_kind == "base":
+            self._close_display_popup()
+            self.root.after(0, lambda: self._toggle_display_popup("base"))
 
     def _refresh_target_display_column_options(self) -> None:
         selected_before = set(self.get_selected_target_display_columns()) | set(self.saved_target_display_columns)
@@ -876,20 +1017,17 @@ class SqlSemanticWorkflowApp:
             for column in self.target_columns
             if column and column != current_sql
         ]
-        self.target_display_menu.delete(0, tk.END)
         self.target_display_column_vars = {}
         for column in selectable_columns:
             var = tk.BooleanVar(value=column in selected_before)
             self.target_display_column_vars[column] = var
-            self.target_display_menu.add_checkbutton(
-                label=column,
-                variable=var,
-                command=self._toggle_target_display_column,
-            )
         self.saved_target_display_columns = self.get_selected_target_display_columns()
         self._update_target_display_columns_summary()
         if not selectable_columns:
             self.target_display_columns_summary.set("无可选显示列")
+        if self.active_display_popup_kind == "target":
+            self._close_display_popup()
+            self.root.after(0, lambda: self._toggle_display_popup("target"))
 
     def load_base_columns(self) -> None:
         path = Path(self.base_file.get().strip())
