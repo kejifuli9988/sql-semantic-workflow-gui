@@ -288,17 +288,23 @@ def pick_sql_column(columns: Sequence[str], preferred: str | None) -> str:
     raise KeyError(f"未自动识别 SQL 列，实际列: {names}")
 
 
-def load_records(path: Path, sql_column: str | None, id_column: str | None) -> Tuple[List[SqlRecord], str]:
+def load_records(
+    path: Path,
+    sql_column: str | None,
+    extra_meta_columns: Sequence[str] | None = None,
+) -> Tuple[List[SqlRecord], str]:
     df = load_table(path)
     sql_col = pick_sql_column(df.columns, sql_column)
+    extra_meta_columns = list(extra_meta_columns or [])
     rows: List[SqlRecord] = []
     for idx, row in df.reset_index(drop=True).iterrows():
         sql = str(row.get(sql_col) or "").strip()
         if not sql or sql.lower() == "nan":
             continue
         meta: Dict[str, str] = {}
-        if id_column and id_column in df.columns:
-            meta[id_column] = str(row.get(id_column) or "")
+        for column in extra_meta_columns:
+            if column in df.columns and column != sql_col:
+                meta[column] = str(row.get(column) or "")
         rows.append(SqlRecord(source_row=idx + 2, sql=sql, meta=meta))
     return rows, sql_col
 
@@ -507,13 +513,16 @@ def build_prepare_payload(
     target_records: Sequence[SqlRecord],
     base_sql_col: str,
     target_sql_col: str,
-    base_id_column: str | None,
+    base_display_columns: Sequence[str] | None,
+    target_display_columns: Sequence[str] | None,
     top_k: int,
 ) -> Dict[str, object]:
     review_tasks: List[Dict[str, object]] = []
     candidate_rows: List[Dict[str, object]] = []
     pair_seq = 0
     target_table_index = build_target_table_index(target_records)
+    base_display_columns = list(base_display_columns or [])
+    target_display_columns = list(target_display_columns or [])
 
     for base in base_records:
         ranked = choose_candidates(base, target_records, max(1, top_k), target_table_index)
@@ -524,8 +533,9 @@ def build_prepare_payload(
                 {
                     "pair_id": pair_id,
                     "base_row": base.source_row,
-                    "base_id": base.meta.get(base_id_column or "", ""),
+                    "base_display_values": {column: base.meta.get(column, "") for column in base_display_columns},
                     "target_row": target.source_row,
+                    "target_display_values": {column: target.meta.get(column, "") for column in target_display_columns},
                     "candidate_rank": rank,
                     "base_sql": base.sql,
                     "target_sql": target.sql,
@@ -538,8 +548,9 @@ def build_prepare_payload(
                 {
                     "pair_id": pair_id,
                     "base_row": base.source_row,
-                    "base_id": base.meta.get(base_id_column or "", ""),
+                    "base_display_values": {column: base.meta.get(column, "") for column in base_display_columns},
                     "target_row": target.source_row,
+                    "target_display_values": {column: target.meta.get(column, "") for column in target_display_columns},
                     "candidate_rank": rank,
                     "coarse_score": coarse["score"],
                     "table_overlap": coarse["table_overlap"],
@@ -560,7 +571,8 @@ def build_prepare_payload(
         "target_file": str(target_path.resolve()),
         "base_sql_column": base_sql_col,
         "target_sql_column": target_sql_col,
-        "base_id_column": base_id_column or "",
+        "base_display_columns": base_display_columns,
+        "target_display_columns": target_display_columns,
         "top_k": top_k,
         "base_count": len(base_records),
         "target_count": len(target_records),
@@ -738,10 +750,11 @@ def build_finalize_payload(prepared: Dict[str, object], review_results: List[Dic
         matches.append(
             {
                 "base_row": best["base_row"],
-                "base_id": best.get("base_id", ""),
+                "base_display_values": dict(best.get("base_display_values") or {}),
                 "base_sql": best["base_sql"],
                 "best_target_row": best["target_row"],
                 "best_target_sql": best["target_sql"],
+                "target_display_values": dict(best.get("target_display_values") or {}),
                 "judgement": best["judgement"],
                 "confidence": best["confidence"],
                 "semantic_score": best["semantic_score"],
@@ -765,8 +778,9 @@ def build_finalize_payload(prepared: Dict[str, object], review_results: List[Dic
         candidate_rows.append(
             {
                 "base_row": item["base_row"],
-                "base_id": item.get("base_id", ""),
+                "base_display_values": dict(item.get("base_display_values") or {}),
                 "target_row": item["target_row"],
+                "target_display_values": dict(item.get("target_display_values") or {}),
                 "candidate_rank": item["candidate_rank"],
                 "coarse_score": coarse["coarse_score"],
                 "table_overlap": coarse["table_overlap"],
@@ -784,7 +798,8 @@ def build_finalize_payload(prepared: Dict[str, object], review_results: List[Dic
         "target_file": prepared["target_file"],
         "base_sql_column": prepared["base_sql_column"],
         "target_sql_column": prepared["target_sql_column"],
-        "base_id_column": prepared.get("base_id_column", ""),
+        "base_display_columns": prepared.get("base_display_columns", []),
+        "target_display_columns": prepared.get("target_display_columns", []),
         "top_k": prepared["top_k"],
         "base_count": prepared["base_count"],
         "target_count": prepared["target_count"],
@@ -853,7 +868,6 @@ def export_excel(payload: Dict[str, object], output_path: Path) -> None:
     matches_ws = wb.create_sheet("逐条语义比对")
     match_columns = [
         "主文件行号",
-        "主文件主键",
         "主文件SQL",
         "对比文件匹配行号",
         "对比文件匹配SQL",
@@ -870,35 +884,40 @@ def export_excel(payload: Dict[str, object], output_path: Path) -> None:
         "关键差异点",
         "详细说明",
     ]
+    base_extra_columns = [f"主文件_{str(column)}" for column in payload.get("base_display_columns", []) if str(column).strip()]
+    target_extra_columns = [f"对比文件_{str(column)}" for column in payload.get("target_display_columns", []) if str(column).strip()]
+    match_columns.extend(base_extra_columns)
+    match_columns.extend(target_extra_columns)
     match_rows: List[Dict[str, object]] = []
     for row in payload["matches"]:
-        match_rows.append(
-            {
-                "主文件行号": row["base_row"],
-                "主文件主键": row.get("base_id", ""),
-                "主文件SQL": row["base_sql"],
-                "对比文件匹配行号": row["best_target_row"],
-                "对比文件匹配SQL": row["best_target_sql"],
-                "判断结果": row["judgement"],
-                "置信度": row["confidence"],
-                "语义评分": row["semantic_score"],
-                "主SQL依据行号": row["base_line_refs"],
-                "候选SQL依据行号": row["target_line_refs"],
-                "JOIN变化": row["join_change"],
-                "WHERE变化": row["where_change"],
-                "GROUP BY变化": row["group_by_change"],
-                "子查询变化": row["subquery_change"],
-                "共同核心表": "、".join(row["common_tables"]),
-                "关键差异点": "\n".join(row["key_differences"]),
-                "详细说明": row["reasoning"],
-            }
-        )
+        row_data = {
+            "主文件行号": row["base_row"],
+            "主文件SQL": row["base_sql"],
+            "对比文件匹配行号": row["best_target_row"],
+            "对比文件匹配SQL": row["best_target_sql"],
+            "判断结果": row["judgement"],
+            "置信度": row["confidence"],
+            "语义评分": row["semantic_score"],
+            "主SQL依据行号": row["base_line_refs"],
+            "候选SQL依据行号": row["target_line_refs"],
+            "JOIN变化": row["join_change"],
+            "WHERE变化": row["where_change"],
+            "GROUP BY变化": row["group_by_change"],
+            "子查询变化": row["subquery_change"],
+            "共同核心表": "、".join(row["common_tables"]),
+            "关键差异点": "\n".join(row["key_differences"]),
+            "详细说明": row["reasoning"],
+        }
+        for column in payload.get("base_display_columns", []):
+            row_data[f"主文件_{column}"] = (row.get("base_display_values") or {}).get(column, "")
+        for column in payload.get("target_display_columns", []):
+            row_data[f"对比文件_{column}"] = (row.get("target_display_values") or {}).get(column, "")
+        match_rows.append(row_data)
     write_sheet(matches_ws, match_rows, match_columns)
 
     candidates_ws = wb.create_sheet("候选明细")
     candidate_columns = [
         "主文件行号",
-        "主文件主键",
         "对比文件候选行号",
         "候选排名",
         "粗召回得分",
@@ -909,23 +928,27 @@ def export_excel(payload: Dict[str, object], output_path: Path) -> None:
         "模型判断",
         "模型语义评分",
     ]
+    candidate_columns.extend(base_extra_columns)
+    candidate_columns.extend(target_extra_columns)
     candidate_rows: List[Dict[str, object]] = []
     for row in payload["candidates"]:
-        candidate_rows.append(
-            {
-                "主文件行号": row["base_row"],
-                "主文件主键": row.get("base_id", ""),
-                "对比文件候选行号": row["target_row"],
-                "候选排名": row["candidate_rank"],
-                "粗召回得分": row["coarse_score"],
-                "核心表重合度": row["table_overlap"],
-                "WHERE重合度": row["where_jaccard"],
-                "SELECT重合度": row["select_overlap"],
-                "GROUP重合度": row["group_jaccard"],
-                "模型判断": row["llm_judgement"],
-                "模型语义评分": row["llm_semantic_score"],
-            }
-        )
+        row_data = {
+            "主文件行号": row["base_row"],
+            "对比文件候选行号": row["target_row"],
+            "候选排名": row["candidate_rank"],
+            "粗召回得分": row["coarse_score"],
+            "核心表重合度": row["table_overlap"],
+            "WHERE重合度": row["where_jaccard"],
+            "SELECT重合度": row["select_overlap"],
+            "GROUP重合度": row["group_jaccard"],
+            "模型判断": row["llm_judgement"],
+            "模型语义评分": row["llm_semantic_score"],
+        }
+        for column in payload.get("base_display_columns", []):
+            row_data[f"主文件_{column}"] = (row.get("base_display_values") or {}).get(column, "")
+        for column in payload.get("target_display_columns", []):
+            row_data[f"对比文件_{column}"] = (row.get("target_display_values") or {}).get(column, "")
+        candidate_rows.append(row_data)
     write_sheet(candidates_ws, candidate_rows, candidate_columns)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -935,8 +958,10 @@ def export_excel(payload: Dict[str, object], output_path: Path) -> None:
 def prepare_mode(args: argparse.Namespace) -> None:
     base_path = Path(args.base)
     target_path = Path(args.target)
-    base_records, base_sql_col = load_records(base_path, args.base_sql_column, args.base_id_column)
-    target_records, target_sql_col = load_records(target_path, args.target_sql_column, None)
+    base_display_columns = [item.strip() for item in (args.base_display_columns or "").split(",") if item.strip()]
+    target_display_columns = [item.strip() for item in (args.target_display_columns or "").split(",") if item.strip()]
+    base_records, base_sql_col = load_records(base_path, args.base_sql_column, base_display_columns)
+    target_records, target_sql_col = load_records(target_path, args.target_sql_column, target_display_columns)
 
     if not base_records:
         raise RuntimeError("主文件未读取到有效 SQL")
@@ -950,7 +975,8 @@ def prepare_mode(args: argparse.Namespace) -> None:
         target_records,
         base_sql_col,
         target_sql_col,
-        args.base_id_column,
+        base_display_columns,
+        target_display_columns,
         args.top_k,
     )
     output_path = Path(args.output)
@@ -1013,7 +1039,8 @@ def main() -> None:
     parser.add_argument("--target", help="对比文件路径，仅 prepare 模式需要")
     parser.add_argument("--base-sql-column", help="主文件 SQL 列名，仅 prepare 模式需要")
     parser.add_argument("--target-sql-column", help="对比文件 SQL 列名，仅 prepare 模式需要")
-    parser.add_argument("--base-id-column", help="主文件业务主键列名，例如任务编号，仅 prepare 模式需要")
+    parser.add_argument("--base-display-columns", help="主文件需要在最终 Excel 末尾展示的列名，多个逗号分隔，仅 prepare 模式需要")
+    parser.add_argument("--target-display-columns", help="对比文件需要在最终 Excel 末尾展示的列名，多个逗号分隔，仅 prepare 模式需要")
     parser.add_argument("--top-k", type=int, default=3, help="每条主 SQL 召回多少个候选，仅 prepare 模式需要")
     parser.add_argument("--prepared", help="prepare 阶段产出的 JSON，split-prepare 和 finalize 模式需要")
     parser.add_argument("--batch-size", type=int, default=20, help="split-prepare 模式每批多少条，默认 20")

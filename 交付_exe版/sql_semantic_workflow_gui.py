@@ -6,8 +6,9 @@ import subprocess
 import sys
 import threading
 import traceback
+from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -195,102 +196,364 @@ class SqlSemanticWorkflowApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("SQL 语义比对工作流")
-        self.root.geometry("600x800")
         self.settings = load_settings()
+        self.page_bg = "#F5F7FA"
+        self.card_bg = "#FFFFFF"
+        self.border_color = "#E5E7EB"
+        self.primary = "#2563EB"
+        self.primary_hover = "#1D4ED8"
+        self.primary_soft = "#EFF6FF"
+        self.text_primary = "#111827"
+        self.text_secondary = "#6B7280"
+        self.code_bg = "#F8FAFC"
+        self.success = "#16A34A"
+        self.error = "#DC2626"
+        self.running = "#2563EB"
+        self.root.configure(bg=self.page_bg)
+        self._configure_styles()
+        self._set_default_window()
 
         self.base_file = tk.StringVar(value=self.settings.get("base_file", ""))
         self.target_file = tk.StringVar(value=self.settings.get("target_file", ""))
         self.base_sql_column = tk.StringVar(value=self.settings.get("base_sql_column", ""))
         self.target_sql_column = tk.StringVar(value=self.settings.get("target_sql_column", ""))
-        self.base_id_column = tk.StringVar(value=self.settings.get("base_id_column", "任务编号"))
+        self.base_display_columns_summary = tk.StringVar(value="未选择显示列")
+        self.target_display_columns_summary = tk.StringVar(value="未选择显示列")
         self.top_k = tk.StringVar(value=str(self.settings.get("top_k", 3)))
         self.batch_size = tk.StringVar(value=str(self.settings.get("batch_size", 20)))
         self.result_dir = tk.StringVar(value=self.settings.get("result_dir", str(Path.cwd() / "result")))
         self.base_columns: List[str] = []
         self.target_columns: List[str] = []
+        self.base_display_column_vars: Dict[str, tk.BooleanVar] = {}
+        self.target_display_column_vars: Dict[str, tk.BooleanVar] = {}
+        self.saved_base_display_columns = list(self.settings.get("base_display_columns", []))
+        self.saved_target_display_columns = list(self.settings.get("target_display_columns", []))
 
         self.review_result_files: List[Path] = []
         self.is_busy = False
         self.action_buttons: List[ttk.Button] = []
         self.secondary_buttons: List[ttk.Button] = []
+        self.status_heading_var = tk.StringVar(value="待开始")
+        self.status_message_var = tk.StringVar(value="请先选择文件并配置参数。")
+        self.status_var = self.status_message_var
+        self.status_file_name_var = tk.StringVar(value="尚未生成结果文件")
+        self.status_file_path_var = tk.StringVar(value="-")
+        self.status_time_var = tk.StringVar(value="-")
+        self.status_color = self.text_secondary
 
         self._build_ui()
         self._load_saved_column_options()
         self.refresh_prompt_preview()
+        self.refresh_command_preview()
+
+    def _configure_styles(self) -> None:
+        style = ttk.Style()
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        default_font = ("Microsoft YaHei UI", 10)
+        text_font = ("Microsoft YaHei UI", 10)
+        title_font = ("Microsoft YaHei UI", 18, "bold")
+        subtitle_font = ("Microsoft YaHei UI", 9)
+        section_font = ("Microsoft YaHei UI", 11, "bold")
+        code_font = ("Consolas", 10)
+
+        style.configure(".", font=default_font)
+        style.configure("Page.TFrame", background=self.page_bg)
+        style.configure("CardInner.TFrame", background=self.card_bg)
+        style.configure("CardBody.TFrame", background=self.card_bg)
+        style.configure("HeaderTitle.TLabel", background=self.page_bg, foreground=self.text_primary, font=title_font)
+        style.configure("HeaderSubtitle.TLabel", background=self.page_bg, foreground=self.text_secondary, font=subtitle_font)
+        style.configure("SectionTitle.TLabel", background=self.card_bg, foreground=self.text_primary, font=section_font)
+        style.configure("FieldLabel.TLabel", background=self.card_bg, foreground=self.text_primary, font=text_font)
+        style.configure("Muted.TLabel", background=self.card_bg, foreground=self.text_secondary, font=subtitle_font)
+        style.configure("StatusMain.TLabel", background=self.card_bg, foreground=self.text_primary, font=("Microsoft YaHei UI", 11, "bold"))
+        style.configure("StatusFile.TLabel", background=self.card_bg, foreground=self.text_primary, font=("Microsoft YaHei UI", 10, "bold"))
+        style.configure("Primary.TButton", foreground="#FFFFFF", background=self.primary, borderwidth=0, padding=(12, 7))
+        style.map("Primary.TButton", background=[("active", self.primary_hover), ("pressed", self.primary_hover)])
+        style.configure("Secondary.TButton", foreground=self.text_primary, background=self.card_bg, bordercolor=self.border_color, relief="solid", padding=(10, 6))
+        style.map("Secondary.TButton", background=[("active", self.primary_soft)], bordercolor=[("active", self.primary)])
+        style.configure("Accent.TButton", foreground=self.primary, background=self.card_bg, bordercolor=self.primary, relief="solid", padding=(10, 6))
+        style.map("Accent.TButton", background=[("active", self.primary_soft)], bordercolor=[("active", self.primary_hover)], foreground=[("active", self.primary_hover)])
+        style.configure("TEntry", padding=5, fieldbackground="#FFFFFF", bordercolor=self.border_color)
+        style.configure("TCombobox", padding=3, fieldbackground="#FFFFFF", bordercolor=self.border_color)
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", "#FFFFFF"), ("!disabled", "#FFFFFF")],
+            background=[("readonly", "#FFFFFF"), ("!disabled", "#FFFFFF")],
+            foreground=[("readonly", self.text_primary), ("!disabled", self.text_primary)],
+        )
+        style.configure(
+            "White.TMenubutton",
+            background="#FFFFFF",
+            foreground=self.text_primary,
+            bordercolor=self.border_color,
+            relief="solid",
+            padding=(8, 5),
+        )
+        style.map(
+            "White.TMenubutton",
+            background=[("active", "#FFFFFF"), ("!disabled", "#FFFFFF")],
+            foreground=[("active", self.text_primary), ("!disabled", self.text_primary)],
+            bordercolor=[("active", self.primary), ("!disabled", self.border_color)],
+        )
+        style.configure("TNotebook", background=self.card_bg, borderwidth=0, tabmargins=(0, 0, 0, 0))
+        style.configure("TNotebook.Tab", padding=(10, 4), font=("Microsoft YaHei UI", 10))
+        style.map("TNotebook.Tab", foreground=[("selected", self.primary)], background=[("selected", self.card_bg)])
+        self.code_font = code_font
+
+    def _set_default_window(self) -> None:
+        width = 720
+        height = 680
+        self.root.minsize(680, 620)
+        self.root.geometry(f"{width}x{height}")
+        self.root.update_idletasks()
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        x = max(0, int((screen_w - width) / 2))
+        y = max(0, int((screen_h - height) / 2) - 20)
+        self.root.geometry(f"{width}x{height}+{x}+{y}")
 
     def _build_ui(self) -> None:
-        frame = ttk.Frame(self.root, padding=12)
-        frame.pack(fill=tk.BOTH, expand=True)
+        self.page = ttk.Frame(self.root, style="Page.TFrame", padding=(14, 10, 14, 10))
+        self.page.pack(fill=tk.BOTH, expand=True)
+        self.page.columnconfigure(0, weight=1)
 
-        form = ttk.LabelFrame(frame, text="输入参数", padding=10)
+        self._build_header(self.page)
+
+        form_card, form_body = self._create_card(self.page, "参数配置", "⚙")
+        form_card.pack(fill=tk.X, pady=(0, 10))
+        self._build_parameter_section(form_body)
+
+        flow_card, flow_body = self._create_card(self.page, "比对流程", "⇄")
+        flow_card.pack(fill=tk.X, pady=(0, 10))
+        self._build_flow_section(flow_body)
+
+        quick_card, quick_body = self._create_card(self.page, "快捷操作", "⌘")
+        quick_card.pack(fill=tk.X, pady=(0, 10))
+        self._build_quick_actions(quick_body)
+
+        bottom = ttk.Frame(self.page, style="Page.TFrame")
+        bottom.pack(fill=tk.BOTH, expand=True)
+        bottom.columnconfigure(0, weight=2)
+        bottom.columnconfigure(1, weight=18)
+
+        status_card, status_body = self._create_card(bottom, "运行状态", "●")
+        status_card.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        self._build_status_section(status_body)
+
+        detail_card, detail_body = self._create_card(bottom, "执行详情", "☰")
+        detail_card.grid(row=0, column=1, sticky="nsew")
+        self._build_detail_section(detail_body)
+
+    def _build_header(self, parent) -> None:
+        header = ttk.Frame(parent, style="Page.TFrame")
+        header.pack(fill=tk.X, pady=(0, 8))
+
+        badge = tk.Canvas(header, width=40, height=40, bg=self.page_bg, highlightthickness=0)
+        badge.pack(side=tk.LEFT, padx=(0, 10))
+        badge.create_oval(2, 2, 38, 38, fill=self.primary_soft, outline="")
+        badge.create_text(20, 20, text="SQL", fill=self.primary, font=("Microsoft YaHei UI", 11, "bold"))
+
+        text_wrap = ttk.Frame(header, style="Page.TFrame")
+        text_wrap.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Label(text_wrap, text="SQL 语义比对工作流", style="HeaderTitle.TLabel").pack(anchor="w")
+        ttk.Label(
+            text_wrap,
+            text="用于批量完成 SQL 候选召回、AI 语义分析与结果汇总",
+            style="HeaderSubtitle.TLabel",
+        ).pack(anchor="w", pady=(1, 0))
+
+    def _create_card(self, parent, title: str, icon: str = ""):
+        card = tk.Frame(parent, bg=self.card_bg, highlightbackground=self.border_color, highlightthickness=1, bd=0)
+        title_row = tk.Frame(card, bg=self.card_bg)
+        title_row.pack(fill=tk.X, padx=12, pady=(7, 4))
+        tk.Frame(title_row, bg=self.primary, width=4, height=16).pack(side=tk.LEFT, padx=(0, 8))
+        if icon:
+            tk.Label(
+                title_row,
+                text=icon,
+                bg=self.card_bg,
+                fg=self.primary,
+                font=("Microsoft YaHei UI", 10, "bold"),
+            ).pack(side=tk.LEFT, padx=(0, 6))
+        title_label = ttk.Label(title_row, text=title, style="SectionTitle.TLabel")
+        title_label.pack(side=tk.LEFT)
+        body = ttk.Frame(card, style="CardBody.TFrame", padding=(12, 1, 12, 8))
+        body.pack(fill=tk.BOTH, expand=True)
+        return card, body
+
+    def _build_parameter_section(self, body) -> None:
+        form = ttk.Frame(body, style="CardBody.TFrame")
         form.pack(fill=tk.X)
+        form.columnconfigure(0, minsize=72)
+        form.columnconfigure(1, weight=1)
+        form.columnconfigure(2, minsize=72)
+        form.columnconfigure(3, weight=1)
+        form.columnconfigure(4, minsize=72)
 
         self._row_file(form, 0, "主文件", self.base_file, self.pick_base_file)
         self._row_file(form, 1, "对比文件", self.target_file, self.pick_target_file)
-        self.base_sql_column_box = self._row_select(form, 2, "主文件 SQL 列", self.base_sql_column)
-        self.target_sql_column_box = self._row_select(form, 3, "对比文件 SQL 列", self.target_sql_column)
-        self.base_id_column_box = self._row_select(form, 4, "主文件主键列", self.base_id_column)
-        self._row_text(form, 5, "候选召回 top_k", self.top_k)
-        self._row_text(form, 6, "每批条数", self.batch_size)
-        self._row_file(form, 7, "结果目录", self.result_dir, self.pick_result_dir, directory=True)
+        self.base_sql_column_box, self.target_sql_column_box = self._row_dual_select(
+            form, 2, "主文件 SQL 列", self.base_sql_column, "对比文件 SQL 列", self.target_sql_column
+        )
+        self._row_dual_multi_select(form, 3, "主文件显示列", "对比文件显示列")
+        self.base_sql_column_box.bind("<<ComboboxSelected>>", self._on_base_sql_column_changed)
+        self.target_sql_column_box.bind("<<ComboboxSelected>>", self._on_target_sql_column_changed)
+        self._row_dual_text(form, 4, "候选召回 top_k", self.top_k, "每批条数", self.batch_size)
+        self._row_file(form, 5, "结果目录", self.result_dir, self.pick_result_dir, directory=True)
 
-        actions = ttk.LabelFrame(frame, text="操作", padding=10)
-        actions.pack(fill=tk.X, pady=(12, 0))
-
-        prepare_button = ttk.Button(actions, text="1. 生成 Prepare 并拆分", command=self.generate_prepare_and_split)
-        prepare_button.grid(row=0, column=0, padx=6, pady=6, sticky="w")
-        prompt_button = ttk.Button(actions, text="2. 刷新并复制提示词", command=self.refresh_and_copy_prompt)
-        prompt_button.grid(row=0, column=1, padx=6, pady=6, sticky="w")
-        merge_button = ttk.Button(actions, text="3. 合并 review_results_part 生成 Excel", command=self.merge_and_finalize)
-        merge_button.grid(row=0, column=2, padx=6, pady=6, sticky="w")
+    def _build_flow_section(self, body) -> None:
+        flow = ttk.Frame(body, style="CardBody.TFrame")
+        flow.pack()
+        prepare_button = ttk.Button(flow, text="① 生成预处理文件", style="Primary.TButton", command=self.generate_prepare_and_split)
+        prepare_button.grid(row=0, column=0)
+        ttk.Label(flow, text="→", style="SectionTitle.TLabel").grid(row=0, column=1, padx=8)
+        prompt_button = ttk.Button(flow, text="② 复制 AI 提示词", style="Primary.TButton", command=self.refresh_and_copy_prompt)
+        prompt_button.grid(row=0, column=2)
+        ttk.Label(flow, text="→", style="SectionTitle.TLabel").grid(row=0, column=3, padx=8)
+        merge_button = ttk.Button(flow, text="③ 合并生成 Excel", style="Primary.TButton", command=self.merge_and_finalize)
+        merge_button.grid(row=0, column=4)
         self.action_buttons.extend([prepare_button, prompt_button, merge_button])
-        second_row = ttk.Frame(actions)
-        second_row.grid(row=1, column=0, columnspan=3, sticky="w", padx=6, pady=(6, 0))
-        export_skill_button = ttk.Button(second_row, text="导出 skill.md", command=self.export_skill_md)
-        export_skill_button.pack(side=tk.LEFT, padx=(0, 8))
-        copy_role_button = ttk.Button(second_row, text="复制智能体角色文案", command=self.copy_role_md)
-        copy_role_button.pack(side=tk.LEFT, padx=(0, 8))
-        open_dir_button = ttk.Button(second_row, text="打开结果目录", command=self.open_result_dir)
-        open_dir_button.pack(side=tk.LEFT, padx=(0, 8))
-        open_excel_button = ttk.Button(second_row, text="打开最终 Excel", command=self.open_final_excel)
-        open_excel_button.pack(side=tk.LEFT)
-        self.secondary_buttons.extend([
-            export_skill_button,
-            copy_role_button,
-            open_dir_button,
-            open_excel_button,
-        ])
 
-        info = ttk.LabelFrame(frame, text="状态", padding=10)
-        info.pack(fill=tk.X, pady=(12, 0))
-        self.status_var = tk.StringVar(value="待开始")
-        ttk.Label(info, textvariable=self.status_var).pack(anchor="w")
+    def _build_quick_actions(self, body) -> None:
+        row = ttk.Frame(body, style="CardBody.TFrame")
+        row.pack()
+        export_skill_button = ttk.Button(row, text="📄 导出 Skill", style="Secondary.TButton", command=self.export_skill_md)
+        export_skill_button.grid(row=0, column=0)
+        copy_role_button = ttk.Button(row, text="🧠 复制智能体角色文案", style="Secondary.TButton", command=self.copy_role_md)
+        copy_role_button.grid(row=0, column=1, padx=(8, 0))
+        open_dir_button = ttk.Button(row, text="📁 打开结果目录", style="Secondary.TButton", command=self.open_result_dir)
+        open_dir_button.grid(row=0, column=2, padx=(8, 0))
+        open_excel_button = ttk.Button(row, text="📗 打开最终 Excel", style="Accent.TButton", command=self.open_final_excel)
+        open_excel_button.grid(row=0, column=3, padx=(8, 0))
+        self.secondary_buttons.extend([export_skill_button, copy_role_button, open_dir_button, open_excel_button])
 
-        command_frame = ttk.LabelFrame(frame, text="命令预览", padding=10)
-        command_frame.pack(fill=tk.X, pady=(12, 0))
-        self.command_text = tk.Text(command_frame, height=8, wrap=tk.WORD)
-        self.command_text.pack(fill=tk.X)
+    def _build_status_section(self, body) -> None:
+        self.status_badge = tk.Label(body, text="●", bg=self.card_bg, fg=self.status_color, font=("Microsoft YaHei UI", 14, "bold"))
+        self.status_badge.pack(anchor="w")
+        self.status_heading_label = ttk.Label(body, textvariable=self.status_heading_var, style="StatusMain.TLabel")
+        self.status_heading_label.pack(anchor="w", pady=(1, 4))
+        ttk.Label(body, textvariable=self.status_message_var, style="Muted.TLabel").pack(anchor="w", pady=(0, 8))
+        ttk.Label(body, text="结果文件：", style="FieldLabel.TLabel").pack(anchor="w", pady=(0, 2))
+        ttk.Label(body, textvariable=self.status_file_name_var, style="StatusFile.TLabel").pack(anchor="w")
+        ttk.Label(body, textvariable=self.status_file_path_var, style="Muted.TLabel").pack(anchor="w", pady=(3, 8))
+        ttk.Label(body, text="完成时间：", style="Muted.TLabel").pack(anchor="w")
+        ttk.Label(body, textvariable=self.status_time_var, style="Muted.TLabel").pack(anchor="w", pady=(2, 0))
 
-        prompt_frame = ttk.LabelFrame(frame, text="给智能体的提示词", padding=10)
-        prompt_frame.pack(fill=tk.BOTH, expand=True, pady=(12, 0))
-        self.prompt_text = tk.Text(prompt_frame, wrap=tk.WORD)
-        self.prompt_text.pack(fill=tk.BOTH, expand=True)
+    def _build_detail_section(self, body) -> None:
+        detail_height = 238
+        detail_container = tk.Frame(body, bg=self.card_bg, height=detail_height, bd=0, highlightthickness=0)
+        detail_container.pack(fill=tk.BOTH, expand=True)
+        detail_container.pack_propagate(False)
+        detail_container.grid_propagate(False)
 
-    def _row_file(self, parent: ttk.LabelFrame, row: int, label: str, var: tk.StringVar, cmd, directory: bool = False, save: bool = False) -> None:
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=4)
-        ttk.Entry(parent, textvariable=var, width=100).grid(row=row, column=1, sticky="ew", pady=4)
-        ttk.Button(parent, text="选择", command=cmd).grid(row=row, column=2, padx=(8, 0), pady=4)
-        parent.columnconfigure(1, weight=1)
+        notebook = ttk.Notebook(detail_container, height=detail_height)
+        notebook.pack(fill=tk.BOTH, expand=True)
+        command_tab = ttk.Frame(notebook, style="CardBody.TFrame")
+        prompt_tab = ttk.Frame(notebook, style="CardBody.TFrame")
+        for tab in (command_tab, prompt_tab):
+            tab.configure(height=detail_height)
+            tab.pack_propagate(False)
+            tab.grid_propagate(False)
+        notebook.add(command_tab, text="命令预览")
+        notebook.add(prompt_tab, text="AI 提示词")
 
-    def _row_text(self, parent: ttk.LabelFrame, row: int, label: str, var: tk.StringVar) -> None:
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=4)
-        ttk.Entry(parent, textvariable=var, width=30).grid(row=row, column=1, sticky="w", pady=4)
+        self.command_text = self._build_text_panel(command_tab, wrap=tk.NONE)
+        self.prompt_text = self._build_text_panel(prompt_tab, wrap=tk.WORD)
 
-    def _row_select(self, parent: ttk.LabelFrame, row: int, label: str, var: tk.StringVar) -> ttk.Combobox:
-        ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=4)
-        combo = ttk.Combobox(parent, textvariable=var, width=40, state="readonly")
-        combo.grid(row=row, column=1, sticky="w", pady=4)
-        return combo
+    def _build_text_panel(self, parent, wrap: str):
+        container = tk.Frame(parent, bg=self.code_bg, highlightbackground=self.border_color, highlightthickness=1, bd=0)
+        container.pack(fill=tk.BOTH, expand=True)
+        text = tk.Text(
+            container,
+            wrap=wrap,
+            font=self.code_font,
+            bg=self.code_bg,
+            fg=self.text_primary,
+            bd=0,
+            relief=tk.FLAT,
+            padx=9,
+            pady=7,
+            insertbackground=self.text_primary,
+        )
+        y_scroll = ttk.Scrollbar(container, orient=tk.VERTICAL, command=text.yview)
+        text.configure(yscrollcommand=y_scroll.set)
+        text.grid(row=0, column=0, sticky="nsew")
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        container.rowconfigure(0, weight=1)
+        container.columnconfigure(0, weight=1)
+        if wrap == tk.NONE:
+            x_scroll = ttk.Scrollbar(container, orient=tk.HORIZONTAL, command=text.xview)
+            text.configure(xscrollcommand=x_scroll.set)
+            x_scroll.grid(row=1, column=0, sticky="ew")
+        else:
+            spacer = tk.Frame(container, bg=self.code_bg, height=16, bd=0, highlightthickness=0)
+            spacer.grid(row=1, column=0, sticky="ew")
+            spacer.grid_propagate(False)
+        return text
+
+    def _row_file(self, parent, row: int, label: str, var: tk.StringVar, cmd, directory: bool = False, save: bool = False) -> None:
+        ttk.Label(parent, text=label, style="FieldLabel.TLabel").grid(row=row, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Entry(parent, textvariable=var).grid(row=row, column=1, columnspan=3, sticky="ew", pady=3)
+        ttk.Button(parent, text="选择", width=5, style="Secondary.TButton", command=cmd).grid(row=row, column=4, padx=(6, 0), pady=3, sticky="ew")
+
+    def _row_dual_text(
+        self,
+        parent,
+        row: int,
+        left_label: str,
+        left_var: tk.StringVar,
+        right_label: str,
+        right_var: tk.StringVar,
+    ) -> None:
+        ttk.Label(parent, text=left_label, style="FieldLabel.TLabel").grid(row=row, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Entry(parent, textvariable=left_var, width=18).grid(row=row, column=1, sticky="ew", pady=3)
+        ttk.Label(parent, text=right_label, style="FieldLabel.TLabel").grid(row=row, column=2, sticky="w", padx=(8, 8), pady=3)
+        ttk.Entry(parent, textvariable=right_var, width=18).grid(row=row, column=3, columnspan=2, sticky="ew", pady=3)
+
+    def _row_dual_multi_select(
+        self,
+        parent,
+        row: int,
+        left_label: str,
+        right_label: str,
+    ) -> None:
+        ttk.Label(parent, text=left_label, style="FieldLabel.TLabel").grid(row=row, column=0, sticky="w", padx=(0, 8), pady=3)
+        left_wrapper = ttk.Frame(parent)
+        left_wrapper.grid(row=row, column=1, sticky="ew", pady=3)
+        left_wrapper.columnconfigure(0, weight=1)
+        self.base_display_menu_button = ttk.Menubutton(left_wrapper, textvariable=self.base_display_columns_summary, style="White.TMenubutton")
+        self.base_display_menu_button.grid(row=0, column=0, sticky="ew")
+        self.base_display_menu = tk.Menu(self.base_display_menu_button, tearoff=False)
+        self.base_display_menu_button["menu"] = self.base_display_menu
+
+        ttk.Label(parent, text=right_label, style="FieldLabel.TLabel").grid(row=row, column=2, sticky="w", padx=(8, 8), pady=3)
+        right_wrapper = ttk.Frame(parent)
+        right_wrapper.grid(row=row, column=3, columnspan=2, sticky="ew", pady=3)
+        right_wrapper.columnconfigure(0, weight=1)
+        self.target_display_menu_button = ttk.Menubutton(right_wrapper, textvariable=self.target_display_columns_summary, style="White.TMenubutton")
+        self.target_display_menu_button.grid(row=0, column=0, sticky="ew")
+        self.target_display_menu = tk.Menu(self.target_display_menu_button, tearoff=False)
+        self.target_display_menu_button["menu"] = self.target_display_menu
+
+    def _row_dual_select(
+        self,
+        parent,
+        row: int,
+        left_label: str,
+        left_var: tk.StringVar,
+        right_label: str,
+        right_var: tk.StringVar,
+    ) -> tuple[ttk.Combobox, ttk.Combobox]:
+        ttk.Label(parent, text=left_label, style="FieldLabel.TLabel").grid(row=row, column=0, sticky="w", padx=(0, 8), pady=3)
+        left_combo = ttk.Combobox(parent, textvariable=left_var, width=22, state="readonly")
+        left_combo.grid(row=row, column=1, sticky="ew", pady=3)
+        ttk.Label(parent, text=right_label, style="FieldLabel.TLabel").grid(row=row, column=2, sticky="w", padx=(8, 8), pady=3)
+        right_combo = ttk.Combobox(parent, textvariable=right_var, width=22, state="readonly")
+        right_combo.grid(row=row, column=3, columnspan=2, sticky="ew", pady=3)
+        return left_combo, right_combo
 
     def _load_saved_column_options(self) -> None:
         try:
@@ -321,16 +584,24 @@ class SqlSemanticWorkflowApp:
             self.result_dir.set(path)
             self.refresh_all_previews()
 
+    def _safe_filename_part(self, text: str) -> str:
+        value = re.sub(r"[\\\\/:*?\"<>|]+", "_", text.strip())
+        value = re.sub(r"\s+", "_", value)
+        value = value.strip("._")
+        return value or "未命名"
+
     def _quote(self, text: str) -> str:
         return f'"{text}"'
 
     def _final_excel_path(self) -> Path:
-        return Path(self.result_dir.get().strip() or ".") / "final_result.xlsx"
+        result_dir = Path(self.result_dir.get().strip() or ".")
+        base_name = self._safe_filename_part(Path(self.base_file.get().strip()).stem) if self.base_file.get().strip() else "主文件"
+        target_name = self._safe_filename_part(Path(self.target_file.get().strip()).stem) if self.target_file.get().strip() else "对比文件"
+        return result_dir / f"对比结果_{base_name}vs{target_name}.xlsx"
 
     def _prepare_command(self) -> str:
         base_sql_column = self.base_sql_column.get().strip()
         target_sql_column = self.target_sql_column.get().strip()
-        base_id_column = self.base_id_column.get().strip()
         cmd = [
             "python",
             "compare_sql_files.py",
@@ -342,8 +613,12 @@ class SqlSemanticWorkflowApp:
             cmd.extend(["--base-sql-column", self._quote(base_sql_column)])
         if target_sql_column:
             cmd.extend(["--target-sql-column", self._quote(target_sql_column)])
-        if base_id_column:
-            cmd.extend(["--base-id-column", self._quote(base_id_column)])
+        base_display_columns = self.get_selected_base_display_columns()
+        target_display_columns = self.get_selected_target_display_columns()
+        if base_display_columns:
+            cmd.extend(["--base-display-columns", self._quote(",".join(base_display_columns))])
+        if target_display_columns:
+            cmd.extend(["--target-display-columns", self._quote(",".join(target_display_columns))])
         cmd.extend([
             "--top-k", self.top_k.get().strip() or "3",
             "--output", self._quote(str(Path(self.result_dir.get().strip() or ".") / "prepare.json")),
@@ -398,6 +673,22 @@ class SqlSemanticWorkflowApp:
         self.refresh_prompt_preview()
         self.refresh_command_preview()
 
+    def _set_status_card(self, state: str, heading: str, message: str, file_path: Path | None = None) -> None:
+        color_map = {
+            "idle": self.text_secondary,
+            "running": self.running,
+            "success": self.success,
+            "error": self.error,
+        }
+        self.status_color = color_map.get(state, self.text_secondary)
+        self.status_badge.configure(fg=self.status_color)
+        self.status_heading_var.set(heading)
+        self.status_message_var.set(message)
+        if file_path is not None:
+            self.status_file_name_var.set(file_path.name)
+            self.status_file_path_var.set(str(file_path))
+            self.status_time_var.set(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+
     def _set_status(self, message: str) -> None:
         self.status_var.set(message)
         self.root.update_idletasks()
@@ -409,6 +700,7 @@ class SqlSemanticWorkflowApp:
             button.config(state=state)
         if message is not None:
             self._set_status(message)
+            self._set_status_card("running" if busy else "idle", "执行中" if busy else "待命", message)
 
     def _run_in_background(self, worker, start_message: str, success_message: str, success_detail: str) -> None:
         if self.is_busy:
@@ -428,18 +720,20 @@ class SqlSemanticWorkflowApp:
 
     def _background_success(self, status_message: str, dialog_message: str) -> None:
         self._set_busy(False, status_message)
+        self._set_status_card("success", "已完成", status_message)
         self.refresh_all_previews()
         messagebox.showinfo("完成", dialog_message)
 
     def _background_error(self, error_text: str) -> None:
         self._set_busy(False, "执行失败")
+        self._set_status_card("error", "执行失败", "请检查输入文件、参数配置或结果文件完整性。")
         messagebox.showerror("错误", error_text)
 
     def _copy_text(self, text: str, success_message: str) -> None:
         self.root.clipboard_clear()
         self.root.clipboard_append(text)
         self.root.update()
-        self.status_var.set(success_message)
+        self._set_status(success_message)
         messagebox.showinfo("完成", success_message)
 
     def _read_packaged_text(self, filename: str, fallback: str) -> str:
@@ -465,6 +759,7 @@ class SqlSemanticWorkflowApp:
         content = self._read_packaged_text("skill.md", DEFAULT_SKILL_MD)
         Path(output_path).write_text(content, encoding="utf-8")
         self._set_status(f"已导出 skill.md：{output_path}")
+        self._set_status_card("success", "已完成", "skill.md 已导出。", Path(output_path))
         messagebox.showinfo("完成", f"已导出 skill.md：\n{output_path}")
 
     def copy_role_md(self) -> None:
@@ -502,12 +797,99 @@ class SqlSemanticWorkflowApp:
         except Exception:
             return columns[0] if columns else ""
 
-    def _auto_pick_id_column(self, columns: List[str]) -> str:
-        preferred = ["任务编号", "技术治理单号", "治理单号", "需求ID", "需求编号", "ID", "id"]
-        for name in preferred:
-            if name in columns:
-                return name
-        return columns[0] if columns else ""
+    def get_selected_base_display_columns(self) -> List[str]:
+        return [
+            column
+            for column, var in self.base_display_column_vars.items()
+            if var.get()
+        ]
+
+    def get_selected_target_display_columns(self) -> List[str]:
+        return [
+            column
+            for column, var in self.target_display_column_vars.items()
+            if var.get()
+        ]
+
+    def _update_base_display_columns_summary(self) -> None:
+        selected = self.get_selected_base_display_columns()
+        if not selected:
+            self.base_display_columns_summary.set("未选择显示列")
+        elif len(selected) <= 3:
+            self.base_display_columns_summary.set("、".join(selected))
+        else:
+            self.base_display_columns_summary.set(f"已选择 {len(selected)} 列")
+
+    def _update_target_display_columns_summary(self) -> None:
+        selected = self.get_selected_target_display_columns()
+        if not selected:
+            self.target_display_columns_summary.set("未选择显示列")
+        elif len(selected) <= 3:
+            self.target_display_columns_summary.set("、".join(selected))
+        else:
+            self.target_display_columns_summary.set(f"已选择 {len(selected)} 列")
+
+    def _toggle_base_display_column(self) -> None:
+        self._update_base_display_columns_summary()
+        self.refresh_all_previews()
+
+    def _toggle_target_display_column(self) -> None:
+        self._update_target_display_columns_summary()
+        self.refresh_all_previews()
+
+    def _on_base_sql_column_changed(self, _event=None) -> None:
+        self._refresh_base_display_column_options()
+        self.refresh_all_previews()
+
+    def _on_target_sql_column_changed(self, _event=None) -> None:
+        self._refresh_target_display_column_options()
+        self.refresh_all_previews()
+
+    def _refresh_base_display_column_options(self) -> None:
+        selected_before = set(self.get_selected_base_display_columns()) | set(self.saved_base_display_columns)
+        current_sql = self.base_sql_column.get().strip()
+        selectable_columns = [
+            column
+            for column in self.base_columns
+            if column and column != current_sql
+        ]
+        self.base_display_menu.delete(0, tk.END)
+        self.base_display_column_vars = {}
+        for column in selectable_columns:
+            var = tk.BooleanVar(value=column in selected_before)
+            self.base_display_column_vars[column] = var
+            self.base_display_menu.add_checkbutton(
+                label=column,
+                variable=var,
+                command=self._toggle_base_display_column,
+            )
+        self.saved_base_display_columns = self.get_selected_base_display_columns()
+        self._update_base_display_columns_summary()
+        if not selectable_columns:
+            self.base_display_columns_summary.set("无可选显示列")
+
+    def _refresh_target_display_column_options(self) -> None:
+        selected_before = set(self.get_selected_target_display_columns()) | set(self.saved_target_display_columns)
+        current_sql = self.target_sql_column.get().strip()
+        selectable_columns = [
+            column
+            for column in self.target_columns
+            if column and column != current_sql
+        ]
+        self.target_display_menu.delete(0, tk.END)
+        self.target_display_column_vars = {}
+        for column in selectable_columns:
+            var = tk.BooleanVar(value=column in selected_before)
+            self.target_display_column_vars[column] = var
+            self.target_display_menu.add_checkbutton(
+                label=column,
+                variable=var,
+                command=self._toggle_target_display_column,
+            )
+        self.saved_target_display_columns = self.get_selected_target_display_columns()
+        self._update_target_display_columns_summary()
+        if not selectable_columns:
+            self.target_display_columns_summary.set("无可选显示列")
 
     def load_base_columns(self) -> None:
         path = Path(self.base_file.get().strip())
@@ -516,11 +898,9 @@ class SqlSemanticWorkflowApp:
         df = workflow.load_table(path)
         self.base_columns = [str(col).strip() for col in df.columns if str(col).strip()]
         self._set_combobox_values(self.base_sql_column_box, self.base_columns)
-        self._set_combobox_values(self.base_id_column_box, [""] + self.base_columns)
         if self.base_sql_column.get().strip() not in self.base_columns:
             self.base_sql_column.set(self._auto_pick_sql_column(self.base_columns))
-        if self.base_id_column.get().strip() not in self.base_columns:
-            self.base_id_column.set(self._auto_pick_id_column(self.base_columns))
+        self._refresh_base_display_column_options()
 
     def load_target_columns(self) -> None:
         path = Path(self.target_file.get().strip())
@@ -531,6 +911,7 @@ class SqlSemanticWorkflowApp:
         self._set_combobox_values(self.target_sql_column_box, self.target_columns)
         if self.target_sql_column.get().strip() not in self.target_columns:
             self.target_sql_column.set(self._auto_pick_sql_column(self.target_columns))
+        self._refresh_target_display_column_options()
 
     def pick_review_result_files(self) -> None:
         paths = filedialog.askopenfilenames(title="选择 review_results_part 文件", filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")])
@@ -546,9 +927,9 @@ class SqlSemanticWorkflowApp:
         self.review_result_files = files
         self._render_review_result_files()
         if files:
-            self.status_var.set(f"已自动发现 {len(files)} 个 review_results_part 文件")
+            self._set_status(f"已自动发现 {len(files)} 个 review_results_part 文件")
         else:
-            self.status_var.set("未发现 review_results_part 文件")
+            self._set_status("未发现 review_results_part 文件")
 
     def _render_review_result_files(self) -> None:
         pass
@@ -587,13 +968,16 @@ class SqlSemanticWorkflowApp:
             raise RuntimeError(f"发现多余的 review_results_part 文件：第 {', '.join(map(str, extra_parts))} 批")
 
     def _persist_settings(self) -> None:
+        self.saved_base_display_columns = self.get_selected_base_display_columns()
+        self.saved_target_display_columns = self.get_selected_target_display_columns()
         save_settings(
             {
                 "base_file": self.base_file.get().strip(),
                 "target_file": self.target_file.get().strip(),
                 "base_sql_column": self.base_sql_column.get().strip(),
                 "target_sql_column": self.target_sql_column.get().strip(),
-                "base_id_column": self.base_id_column.get().strip(),
+                "base_display_columns": self.saved_base_display_columns,
+                "target_display_columns": self.saved_target_display_columns,
                 "top_k": int(self.top_k.get().strip() or "3"),
                 "batch_size": int(self.batch_size.get().strip() or "20"),
                 "result_dir": self.result_dir.get().strip(),
@@ -603,8 +987,18 @@ class SqlSemanticWorkflowApp:
     def _build_prepare_payload(self) -> dict:
         base_path = Path(self.base_file.get().strip())
         target_path = Path(self.target_file.get().strip())
-        base_records, base_sql_col = workflow.load_records(base_path, self.base_sql_column.get().strip() or None, self.base_id_column.get().strip() or None)
-        target_records, target_sql_col = workflow.load_records(target_path, self.target_sql_column.get().strip() or None, None)
+        selected_base_display_columns = self.get_selected_base_display_columns()
+        selected_target_display_columns = self.get_selected_target_display_columns()
+        base_records, base_sql_col = workflow.load_records(
+            base_path,
+            self.base_sql_column.get().strip() or None,
+            selected_base_display_columns,
+        )
+        target_records, target_sql_col = workflow.load_records(
+            target_path,
+            self.target_sql_column.get().strip() or None,
+            selected_target_display_columns,
+        )
         return workflow.build_prepare_payload(
             base_path,
             target_path,
@@ -612,7 +1006,8 @@ class SqlSemanticWorkflowApp:
             target_records,
             base_sql_col,
             target_sql_col,
-            self.base_id_column.get().strip() or None,
+            selected_base_display_columns,
+            selected_target_display_columns,
             int(self.top_k.get().strip() or "3"),
         )
 
@@ -671,9 +1066,11 @@ class SqlSemanticWorkflowApp:
             workflow.export_excel(payload, final_excel_path)
 
             self._set_status(f"已生成 {final_excel_path}")
+            self._set_status_card("success", "已完成", "最终 Excel 已生成。", final_excel_path)
             messagebox.showinfo("完成", f"已生成最终 Excel：\n{final_excel_path}")
         except Exception as exc:
             self._set_status("合并或导出失败")
+            self._set_status_card("error", "执行失败", "合并 review 结果或导出 Excel 时发生错误。")
             messagebox.showerror("错误", f"{exc}\n\n{traceback.format_exc()}")
 
     def refresh_prompt_preview(self) -> None:
