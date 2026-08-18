@@ -1,4 +1,4 @@
-name: Build SQL Semantic Workflow EXE
+name: Build SQL Semantic Compare Tool EXE
 
 on:
   workflow_dispatch:
@@ -33,10 +33,10 @@ jobs:
         shell: cmd
         run: |
           cd /d "交付_exe版"
-          pyinstaller --noconfirm --clean --onefile --windowed --name SQL语义比对工作流 sql_semantic_workflow_gui.py
+          pyinstaller --noconfirm --clean --onefile --windowed --icon sql_compare_tool.ico --name SQL语义比对工具 sql_semantic_workflow_gui.py
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SQL语义比对工作流-Windows-EXE
-          path: 交付_exe版/dist/SQL语义比对工作流.exe
+          name: SQL语义比对工具-Windows-EXE
+          path: 交付_exe版/dist/SQL语义比对工具.exe

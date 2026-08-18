@@ -10,10 +10,11 @@ pyinstaller ^
   --clean ^
   --onefile ^
   --windowed ^
-  --name SQL语义比对工作流 ^
+  --icon sql_compare_tool.ico ^
+  --name SQL语义比对工具 ^
   sql_semantic_workflow_gui.py
 
 echo.
 echo 打包完成，exe 路径：
-echo %~dp0dist\SQL语义比对工作流.exe
+echo %~dp0dist\SQL语义比对工具.exe
 pause

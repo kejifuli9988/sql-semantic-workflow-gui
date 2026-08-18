@@ -17,6 +17,8 @@ import compare_sql_files as workflow
 
 
 SETTINGS_FILE = Path(__file__).with_name("sql_semantic_workflow_gui_settings.json")
+APP_TITLE = "SQL语义比对工具"
+APP_ICON_FILE = Path(__file__).with_name("sql_compare_tool.ico")
 DEFAULT_SKILL_MD = """---
 name: sql-semantic-file-to-file
 description: 用于配合 SQL 语义比对 exe/GUI 工具工作。exe 负责生成 prepare、拆分批次、合并 review 结果并输出最终 Excel；智能体只负责根据 prepare_part 做 SQL 语义判断并输出 review_results_part。
@@ -208,7 +210,7 @@ def save_settings(data: dict) -> None:
 class SqlSemanticWorkflowApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("SQL 语义比对工作流")
+        self.root.title(APP_TITLE)
         self.settings = load_settings()
         self.page_bg = "#F5F7FA"
         self.card_bg = "#FFFFFF"
@@ -225,6 +227,7 @@ class SqlSemanticWorkflowApp:
         self.root.configure(bg=self.page_bg)
         self._configure_styles()
         self._set_default_window()
+        self._apply_window_icon()
 
         self.base_file = tk.StringVar(value=self.settings.get("base_file", ""))
         self.target_file = tk.StringVar(value=self.settings.get("target_file", ""))
@@ -428,12 +431,19 @@ class SqlSemanticWorkflowApp:
 
         text_wrap = ttk.Frame(header, style="Page.TFrame")
         text_wrap.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Label(text_wrap, text="SQL 语义比对工作流", style="HeaderTitle.TLabel").pack(anchor="w")
+        ttk.Label(text_wrap, text=APP_TITLE, style="HeaderTitle.TLabel").pack(anchor="w")
         ttk.Label(
             text_wrap,
             text="用于批量完成 SQL 候选召回、AI 语义分析与结果汇总",
             style="HeaderSubtitle.TLabel",
         ).pack(anchor="w", pady=(1, 0))
+
+    def _apply_window_icon(self) -> None:
+        try:
+            if APP_ICON_FILE.exists():
+                self.root.iconbitmap(str(APP_ICON_FILE))
+        except Exception:
+            pass
 
     def _create_card(self, parent, title: str, icon: str = ""):
         card = tk.Frame(parent, bg=self.card_bg, highlightbackground=self.border_color, highlightthickness=1, bd=0)
