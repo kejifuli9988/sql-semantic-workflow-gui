@@ -39,6 +39,8 @@ description: 用于配合 SQL 语义比对 exe/GUI 工具工作。exe 负责生�
 - 候选 SQL
 - 结构特征
 - 带行号 SQL
+- `expected_result_count`
+- `expected_pair_ids`
 - 需要返回的字段说明
 
 ## 智能体输出
@@ -79,6 +81,9 @@ description: 用于配合 SQL 语义比对 exe/GUI 工具工作。exe 负责生�
 ```text
 请按 prepare_part 分批处理 SQL 语义比对任务。
 不要重新读取 Excel，不要自己生成脚本，不要改 pair_id。
+每个 prepare_part 都要先读取 expected_result_count 和 expected_pair_ids。
+输出结果条数必须等于 expected_result_count。
+输出的 pair_id 必须且只能来自 expected_pair_ids，禁止新增、遗漏、重复、改写 pair_id。
 请直接读取结果目录下的 prepare_part 文件，并为每个 prepare_part 生成对应的 review_results_part JSON。
 完成后返回：已生成了哪些 review_results_part 文件。
 ```

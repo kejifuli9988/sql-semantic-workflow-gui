@@ -58,6 +58,8 @@ description: 用于配合 SQL 语义比对 exe/GUI 工具工作。exe 负责生�
 - 候选 SQL
 - 结构特征
 - 带行号 SQL
+- `expected_result_count`
+- `expected_pair_ids`
 - 需要返回的字段说明
 
 ## 智能体输出
@@ -98,6 +100,9 @@ description: 用于配合 SQL 语义比对 exe/GUI 工具工作。exe 负责生�
 ```text
 请按 prepare_part 分批处理 SQL 语义比对任务。
 不要重新读取 Excel，不要自己生成脚本，不要改 pair_id。
+每个 prepare_part 都要先读取 expected_result_count 和 expected_pair_ids。
+输出结果条数必须等于 expected_result_count。
+输出的 pair_id 必须且只能来自 expected_pair_ids，禁止新增、遗漏、重复、改写 pair_id。
 请直接读取结果目录下的 prepare_part 文件，并为每个 prepare_part 生成对应的 review_results_part JSON。
 完成后返回：已生成了哪些 review_results_part 文件。
 ```
@@ -123,11 +128,14 @@ SQL 语义评审专家
 ## 你的职责
 
 1. 读取 `prepare_part_x.json`
-2. 逐条处理其中的 `pair_id`
-3. 判断主 SQL 和候选 SQL 是否属于同一业务 SQL
-4. 分析 JOIN、WHERE、GROUP BY、子查询、CTE、UNION、过滤条件变化
-5. 标注依据行号
-6. 输出 `review_results_part_x.json`
+2. 先读取其中的 `expected_result_count` 和 `expected_pair_ids`
+3. 逐条处理其中的 `pair_id`
+4. 输出结果条数必须等于 `expected_result_count`
+5. 输出的 `pair_id` 必须且只能来自 `expected_pair_ids`
+6. 判断主 SQL 和候选 SQL 是否属于同一业务 SQL
+7. 分析 JOIN、WHERE、GROUP BY、子查询、CTE、UNION、过滤条件变化
+8. 标注依据行号
+9. 输出 `review_results_part_x.json`
 
 ## 你不要做的事
 
@@ -136,6 +144,9 @@ SQL 语义评审专家
 - 不要自己生成 prepare
 - 不要自己写额外脚本
 - 不要改写 `pair_id`
+- 不要新增未出现在 `expected_pair_ids` 里的结果
+- 不要漏掉 `expected_pair_ids` 里的结果
+- 不要重复 `pair_id`
 - 不要自己生成最终 Excel
 
 ## 判断原则
@@ -171,6 +182,8 @@ SQL 语义评审专家
 ## 输出要求
 
 - 一个 `prepare_part` 对应一个 `review_results_part`
+- 输出结果条数必须等于 `expected_result_count`
+- 输出的 `pair_id` 必须与 `expected_pair_ids` 完全一致
 - JSON 必须完整
 - 不要漏结果
 - 不要重复 `pair_id`
@@ -236,12 +249,10 @@ class SqlSemanticWorkflowApp:
         self.is_busy = False
         self.action_buttons: List[ttk.Button] = []
         self.secondary_buttons: List[ttk.Button] = []
+        self.detail_tab_var = tk.StringVar(value="command")
         self.status_heading_var = tk.StringVar(value="待开始")
         self.status_message_var = tk.StringVar(value="请先选择文件并配置参数。")
         self.status_var = self.status_message_var
-        self.status_file_name_var = tk.StringVar(value="尚未生成结果文件")
-        self.status_file_path_var = tk.StringVar(value="-")
-        self.status_time_var = tk.StringVar(value="-")
         self.status_color = self.text_secondary
 
         self._build_ui()
@@ -279,6 +290,8 @@ class SqlSemanticWorkflowApp:
         style.map("Secondary.TButton", background=[("active", self.primary_soft)], bordercolor=[("active", self.primary)])
         style.configure("Accent.TButton", foreground=self.primary, background=self.card_bg, bordercolor=self.primary, relief="solid", padding=(10, 6))
         style.map("Accent.TButton", background=[("active", self.primary_soft)], bordercolor=[("active", self.primary_hover)], foreground=[("active", self.primary_hover)])
+        style.configure("FilePick.TButton", foreground=self.text_primary, background=self.card_bg, bordercolor=self.border_color, relief="solid", padding=(8, 3))
+        style.map("FilePick.TButton", background=[("active", self.primary_soft)], bordercolor=[("active", self.primary)])
         style.configure("TEntry", padding=5, fieldbackground="#FFFFFF", bordercolor=self.border_color)
         style.configure("TCombobox", padding=3, fieldbackground="#FFFFFF", bordercolor=self.border_color)
         style.map(
@@ -316,9 +329,40 @@ class SqlSemanticWorkflowApp:
             foreground=[("active", self.text_primary), ("!disabled", self.text_primary)],
             bordercolor=[("active", self.primary), ("!disabled", self.border_color)],
         )
-        style.configure("TNotebook", background=self.card_bg, borderwidth=0, tabmargins=(0, 0, 0, 0))
-        style.configure("TNotebook.Tab", padding=(10, 4), font=("Microsoft YaHei UI", 10))
-        style.map("TNotebook.Tab", foreground=[("selected", self.primary)], background=[("selected", self.card_bg)])
+        style.configure(
+            "Vertical.TScrollbar",
+            background="#D6DEEA",
+            troughcolor="#F3F6FA",
+            bordercolor="#F3F6FA",
+            arrowcolor=self.text_secondary,
+            lightcolor="#F3F6FA",
+            darkcolor="#F3F6FA",
+            gripcount=0,
+        )
+        style.map(
+            "Vertical.TScrollbar",
+            background=[("active", "#AFC2F5"), ("pressed", self.primary)],
+            arrowcolor=[("active", self.primary), ("pressed", "#FFFFFF")],
+        )
+        style.configure(
+            "Horizontal.TScrollbar",
+            background="#D6DEEA",
+            troughcolor="#F3F6FA",
+            bordercolor="#F3F6FA",
+            arrowcolor=self.text_secondary,
+            lightcolor="#F3F6FA",
+            darkcolor="#F3F6FA",
+            gripcount=0,
+        )
+        style.map(
+            "Horizontal.TScrollbar",
+            background=[("active", "#AFC2F5"), ("pressed", self.primary)],
+            arrowcolor=[("active", self.primary), ("pressed", "#FFFFFF")],
+        )
+        style.configure("DetailTab.TButton", foreground=self.text_secondary, background=self.card_bg, bordercolor=self.border_color, relief="solid", padding=(10, 4))
+        style.map("DetailTab.TButton", background=[("active", self.card_bg)], foreground=[("active", self.text_primary)], bordercolor=[("active", self.primary)])
+        style.configure("DetailTabActive.TButton", foreground=self.primary, background="#FFFFFF", bordercolor=self.primary, relief="solid", padding=(10, 4))
+        style.map("DetailTabActive.TButton", background=[("active", "#FFFFFF")], foreground=[("active", self.primary)], bordercolor=[("active", self.primary)])
         self.code_font = code_font
 
     def _set_default_window(self) -> None:
@@ -354,15 +398,23 @@ class SqlSemanticWorkflowApp:
 
         bottom = ttk.Frame(self.page, style="Page.TFrame")
         bottom.pack(fill=tk.BOTH, expand=True)
+        bottom.columnconfigure(0, minsize=190)
         bottom.columnconfigure(0, weight=2)
         bottom.columnconfigure(1, weight=18)
+        bottom.rowconfigure(0, minsize=248)
 
         status_card, status_body = self._create_card(bottom, "运行状态", "●")
+        status_card.configure(width=190, height=248)
         status_card.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        status_card.grid_propagate(False)
+        status_card.pack_propagate(False)
         self._build_status_section(status_body)
 
         detail_card, detail_body = self._create_card(bottom, "执行详情", "☰")
+        detail_card.configure(height=248)
         detail_card.grid(row=0, column=1, sticky="nsew")
+        detail_card.grid_propagate(False)
+        detail_card.pack_propagate(False)
         self._build_detail_section(detail_body)
 
     def _build_header(self, parent) -> None:
@@ -444,7 +496,7 @@ class SqlSemanticWorkflowApp:
         copy_role_button.grid(row=0, column=1, padx=(8, 0))
         open_dir_button = ttk.Button(row, text="📁 打开结果目录", style="Secondary.TButton", command=self.open_result_dir, takefocus=False)
         open_dir_button.grid(row=0, column=2, padx=(8, 0))
-        open_excel_button = ttk.Button(row, text="📗 打开最终 Excel", style="Accent.TButton", command=self.open_final_excel, takefocus=False)
+        open_excel_button = ttk.Button(row, text="📗 打开最终 Excel", style="Secondary.TButton", command=self.open_final_excel, takefocus=False)
         open_excel_button.grid(row=0, column=3, padx=(8, 0))
         self.secondary_buttons.extend([export_skill_button, copy_role_button, open_dir_button, open_excel_button])
 
@@ -453,33 +505,61 @@ class SqlSemanticWorkflowApp:
         self.status_badge.pack(anchor="w")
         self.status_heading_label = ttk.Label(body, textvariable=self.status_heading_var, style="StatusMain.TLabel")
         self.status_heading_label.pack(anchor="w", pady=(1, 4))
-        ttk.Label(body, textvariable=self.status_message_var, style="Muted.TLabel").pack(anchor="w", pady=(0, 8))
-        ttk.Label(body, text="结果文件：", style="FieldLabel.TLabel").pack(anchor="w", pady=(0, 2))
-        ttk.Label(body, textvariable=self.status_file_name_var, style="StatusFile.TLabel").pack(anchor="w")
-        ttk.Label(body, textvariable=self.status_file_path_var, style="Muted.TLabel").pack(anchor="w", pady=(3, 8))
-        ttk.Label(body, text="完成时间：", style="Muted.TLabel").pack(anchor="w")
-        ttk.Label(body, textvariable=self.status_time_var, style="Muted.TLabel").pack(anchor="w", pady=(2, 0))
+        ttk.Label(body, textvariable=self.status_message_var, style="Muted.TLabel", wraplength=150, justify=tk.LEFT).pack(anchor="w", pady=(0, 4))
 
     def _build_detail_section(self, body) -> None:
-        detail_height = 238
+        detail_height = 206
         detail_container = tk.Frame(body, bg=self.card_bg, height=detail_height, bd=0, highlightthickness=0)
         detail_container.pack(fill=tk.BOTH, expand=True)
         detail_container.pack_propagate(False)
         detail_container.grid_propagate(False)
 
-        notebook = ttk.Notebook(detail_container, height=detail_height)
-        notebook.pack(fill=tk.BOTH, expand=True)
-        command_tab = ttk.Frame(notebook, style="CardBody.TFrame")
-        prompt_tab = ttk.Frame(notebook, style="CardBody.TFrame")
-        for tab in (command_tab, prompt_tab):
-            tab.configure(height=detail_height)
+        tab_row = ttk.Frame(detail_container, style="CardBody.TFrame")
+        tab_row.pack(fill=tk.X, pady=(0, 4))
+        self.command_tab_button = ttk.Button(
+            tab_row,
+            text="命令预览",
+            style="DetailTabActive.TButton",
+            command=lambda: self._switch_detail_tab("command"),
+            takefocus=False,
+        )
+        self.command_tab_button.pack(side=tk.LEFT)
+        self.prompt_tab_button = ttk.Button(
+            tab_row,
+            text="AI 提示词",
+            style="DetailTab.TButton",
+            command=lambda: self._switch_detail_tab("prompt"),
+            takefocus=False,
+        )
+        self.prompt_tab_button.pack(side=tk.LEFT, padx=(6, 0))
+
+        content_height = detail_height - 34
+        self.detail_content = tk.Frame(detail_container, bg=self.card_bg, height=content_height, bd=0, highlightthickness=0)
+        self.detail_content.pack(fill=tk.BOTH, expand=True)
+        self.detail_content.pack_propagate(False)
+        self.detail_content.grid_propagate(False)
+
+        self.command_tab_frame = ttk.Frame(self.detail_content, style="CardBody.TFrame")
+        self.prompt_tab_frame = ttk.Frame(self.detail_content, style="CardBody.TFrame")
+        for tab in (self.command_tab_frame, self.prompt_tab_frame):
+            tab.configure(height=content_height)
             tab.pack_propagate(False)
             tab.grid_propagate(False)
-        notebook.add(command_tab, text="命令预览")
-        notebook.add(prompt_tab, text="AI 提示词")
 
-        self.command_text = self._build_text_panel(command_tab, wrap=tk.NONE)
-        self.prompt_text = self._build_text_panel(prompt_tab, wrap=tk.WORD)
+        self.command_text = self._build_text_panel(self.command_tab_frame, wrap=tk.NONE)
+        self.prompt_text = self._build_text_panel(self.prompt_tab_frame, wrap=tk.WORD)
+        self._switch_detail_tab("command")
+
+    def _switch_detail_tab(self, tab_name: str) -> None:
+        self.detail_tab_var.set(tab_name)
+        self.command_tab_button.configure(style="DetailTabActive.TButton" if tab_name == "command" else "DetailTab.TButton")
+        self.prompt_tab_button.configure(style="DetailTabActive.TButton" if tab_name == "prompt" else "DetailTab.TButton")
+        self.command_tab_frame.pack_forget()
+        self.prompt_tab_frame.pack_forget()
+        if tab_name == "command":
+            self.command_tab_frame.pack(fill=tk.BOTH, expand=True)
+        else:
+            self.prompt_tab_frame.pack(fill=tk.BOTH, expand=True)
 
     def _build_text_panel(self, parent, wrap: str):
         container = tk.Frame(parent, bg=self.code_bg, highlightbackground=self.border_color, highlightthickness=1, bd=0)
@@ -510,7 +590,39 @@ class SqlSemanticWorkflowApp:
             spacer = tk.Frame(container, bg=self.code_bg, height=16, bd=0, highlightthickness=0)
             spacer.grid(row=1, column=0, sticky="ew")
             spacer.grid_propagate(False)
+        self._bind_mousewheel_to_scroll_target(container, text, text if wrap == tk.NONE else None)
         return text
+
+    def _bind_mousewheel_to_scroll_target(self, widget, scroll_target, horizontal_target=None) -> None:
+        def on_mousewheel(event):
+            if event.delta:
+                direction = -1 if event.delta > 0 else 1
+                scroll_target.yview_scroll(direction, "units")
+            elif getattr(event, "num", None) == 4:
+                scroll_target.yview_scroll(-1, "units")
+            elif getattr(event, "num", None) == 5:
+                scroll_target.yview_scroll(1, "units")
+            return "break"
+
+        def on_shift_mousewheel(event):
+            if horizontal_target is None:
+                return "break"
+            if event.delta:
+                direction = -1 if event.delta > 0 else 1
+                horizontal_target.xview_scroll(direction, "units")
+            elif getattr(event, "num", None) == 4:
+                horizontal_target.xview_scroll(-1, "units")
+            elif getattr(event, "num", None) == 5:
+                horizontal_target.xview_scroll(1, "units")
+            return "break"
+
+        for target in (widget, scroll_target):
+            target.bind("<MouseWheel>", on_mousewheel, add="+")
+            target.bind("<Button-4>", on_mousewheel, add="+")
+            target.bind("<Button-5>", on_mousewheel, add="+")
+            target.bind("<Shift-MouseWheel>", on_shift_mousewheel, add="+")
+            target.bind("<Shift-Button-4>", on_shift_mousewheel, add="+")
+            target.bind("<Shift-Button-5>", on_shift_mousewheel, add="+")
 
     def _toggle_display_popup(self, kind: str) -> None:
         if self.active_display_popup_kind == kind and self.active_display_popup is not None:
@@ -561,6 +673,8 @@ class SqlSemanticWorkflowApp:
         canvas.configure(yscrollcommand=scrollbar.set)
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 0), pady=(0, 6))
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 6), pady=(0, 6))
+        self._bind_mousewheel_to_scroll_target(canvas, canvas)
+        self._bind_mousewheel_to_scroll_target(list_frame, canvas)
 
         for column, var in options:
             check = tk.Checkbutton(
@@ -584,10 +698,13 @@ class SqlSemanticWorkflowApp:
 
         self.root.update_idletasks()
         button.update_idletasks()
-        popup_width = max(button.winfo_width(), 260)
+        popup_width = max(button.winfo_width(), 180)
         popup_height = min(240, max(110, 32 + len(options) * 28))
         x = button.winfo_rootx()
         y = button.winfo_rooty() + button.winfo_height() + 2
+        root_left = self.root.winfo_rootx()
+        root_right = root_left + self.root.winfo_width()
+        popup_width = min(popup_width, max(180, root_right - x - 12))
         popup.geometry(f"{popup_width}x{popup_height}+{x}+{y}")
         canvas.configure(width=popup_width - 22, height=popup_height - 34)
 
@@ -637,7 +754,7 @@ class SqlSemanticWorkflowApp:
     def _row_file(self, parent, row: int, label: str, var: tk.StringVar, cmd, directory: bool = False, save: bool = False) -> None:
         ttk.Label(parent, text=label, style="FieldLabel.TLabel").grid(row=row, column=0, sticky="w", padx=(0, 8), pady=3)
         ttk.Entry(parent, textvariable=var).grid(row=row, column=1, columnspan=3, sticky="ew", pady=3)
-        ttk.Button(parent, text="选择", width=5, style="Secondary.TButton", command=cmd, takefocus=False).grid(row=row, column=4, padx=(6, 0), pady=3, sticky="ew")
+        ttk.Button(parent, text="选择", width=5, style="FilePick.TButton", command=cmd, takefocus=False).grid(row=row, column=4, padx=(6, 0), pady=3, sticky="ew")
 
     def _row_dual_text(
         self,
@@ -832,10 +949,6 @@ class SqlSemanticWorkflowApp:
         self.status_badge.configure(fg=self.status_color)
         self.status_heading_var.set(heading)
         self.status_message_var.set(message)
-        if file_path is not None:
-            self.status_file_name_var.set(file_path.name)
-            self.status_file_path_var.set(str(file_path))
-            self.status_time_var.set(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
 
     def _set_status(self, message: str) -> None:
         self.status_var.set(message)
@@ -1241,13 +1354,16 @@ class SqlSemanticWorkflowApp:
             "5. 不要重新做 prepare。\n"
             "6. 不要新写任何 Python 脚本。\n"
             "7. 不要生成 generate_results.py 或任何辅助脚本。\n"
-            "8. 每个 pair_id 只输出一条结果。\n"
-            "9. 每处理完一个 prepare_part，先完整输出该 part 的 review_results_part_x.json，再继续下一个。\n"
-            "10. 如果单个 part 输出过长，请继续补完这个 part，不要跳到下一个，更不要改成写脚本。\n"
-            "11. 不要把多个 part 的结果混在一个 JSON 里。\n"
-            "12. 只允许输出当前 prepare_part 文件中的 pair_id，禁止输出其他 part 的 pair_id。\n"
-            "13. 每个 review_results_part_x.json 都必须是完整合法 JSON，不允许截断。\n"
-            "14. 全部 part 完成后，再告诉我“所有 review_results_part 已完成”。\n\n"
+            "8. 每个 prepare_part 都要先读取 expected_result_count 和 expected_pair_ids。\n"
+            "9. 每个 pair_id 只输出一条结果。\n"
+            "10. 每处理完一个 prepare_part，先完整输出该 part 的 review_results_part_x.json，再继续下一个。\n"
+            "11. 每个 prepare_part 的输出结果条数必须等于 expected_result_count。\n"
+            "12. 输出的 pair_id 必须且只能来自当前 prepare_part 的 expected_pair_ids。\n"
+            "13. 禁止新增、遗漏、重复、改写 pair_id。\n"
+            "14. 如果单个 part 输出过长，请继续补完这个 part，不要跳到下一个，更不要改成写脚本。\n"
+            "15. 不要把多个 part 的结果混在一个 JSON 里。\n"
+            "16. 每个 review_results_part_x.json 都必须是完整合法 JSON，不允许截断。\n"
+            "17. 全部 part 完成后，再告诉我“所有 review_results_part 已完成”。\n\n"
             "字段必须包含：\n"
             "pair_id, judgement, confidence, semantic_score, same_business, reasoning, "
             "join_change, where_change, group_by_change, subquery_change, base_line_refs, "

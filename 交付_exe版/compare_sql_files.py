@@ -464,6 +464,9 @@ def build_review_prompt(base: SqlRecord, target: SqlRecord, coarse: Dict[str, fl
 
 
 def build_review_prompt_from_task(task: Dict[str, object]) -> str:
+    expected_result_count = int(task.get("expected_result_count") or 0)
+    expected_pair_ids = list(task.get("expected_pair_ids") or [])
+    current_pair_id = str(task.get("pair_id") or "")
     return f"""
 你是资深 SQL 语义分析专家。你的任务不是看字符串像不像，而是判断两条 SQL 是否属于同一业务 SQL。
 
@@ -473,6 +476,15 @@ def build_review_prompt_from_task(task: Dict[str, object]) -> str:
 3. 如果查询目标、统计口径、核心过滤逻辑明显不同，就判为非同一业务SQL。
 4. 必须引用我提供的带行号 SQL，指出你主要依据的具体行号。
 5. 请用中文输出详细说明。
+
+当前批次强约束：
+1. 当前 prepare_part 必须总共输出 {expected_result_count} 条结果。
+2. 当前 prepare_part 允许输出的 pair_id 只有这些：
+{json.dumps(expected_pair_ids, ensure_ascii=False)}
+3. 你当前正在处理的 pair_id 是：{current_pair_id}
+4. 结果条数必须等于 expected_result_count。
+5. pair_id 必须且只能来自 expected_pair_ids，禁止新增、遗漏、重复、改写 pair_id。
+6. 如果当前回复放不下，只能继续补完 expected_pair_ids 中缺失的结果，禁止额外生成第 {expected_result_count + 1} 条。
 
 你必须输出这些字段：
 - judgement
@@ -591,13 +603,16 @@ def split_prepare_payload(prepared: Dict[str, object], batch_size: int) -> List[
 
     for start in range(0, len(review_tasks), batch_size):
         source_tasks = review_tasks[start:start + batch_size]
+        chunk_pair_ids = [str(item["pair_id"]) for item in source_tasks]
+        expected_result_count = len(chunk_pair_ids)
         chunk_tasks: List[Dict[str, object]] = []
         for task in source_tasks:
             task_copy = dict(task)
+            task_copy["expected_result_count"] = expected_result_count
+            task_copy["expected_pair_ids"] = chunk_pair_ids
             task_copy["prompt"] = build_review_prompt_from_task(task_copy)
             task_copy["expected_result_schema"] = expected_result_schema()
             chunk_tasks.append(task_copy)
-        chunk_pair_ids = {str(item["pair_id"]) for item in chunk_tasks}
         chunk_candidates = [candidate_map[pair_id] for pair_id in chunk_pair_ids if pair_id in candidate_map]
         part_no = len(parts) + 1
         parts.append(
@@ -607,6 +622,13 @@ def split_prepare_payload(prepared: Dict[str, object], batch_size: int) -> List[
                 "part_no": part_no,
                 "part_count": 0,
                 "batch_size": batch_size,
+                "expected_result_count": expected_result_count,
+                "expected_pair_ids": chunk_pair_ids,
+                "part_review_notice": (
+                    f"本批次必须输出且只能输出 {expected_result_count} 条结果。"
+                    "pair_id 必须且只能来自 expected_pair_ids。"
+                    "禁止新增、遗漏、重复、改写 pair_id。"
+                ),
                 "review_tasks": chunk_tasks,
                 "candidates": chunk_candidates,
             }
