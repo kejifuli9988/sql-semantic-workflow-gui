@@ -473,16 +473,18 @@ class SqlSemanticWorkflowApp:
         form.columnconfigure(3, weight=1)
         form.columnconfigure(4, minsize=72)
 
-        self._row_file(form, 0, "主文件", self.base_file, self.pick_base_file)
-        self._row_file(form, 1, "对比文件", self.target_file, self.pick_target_file)
+        self._row_file(form, 0, "主文件", self.base_file, self.pick_base_file, extra_button=("打开", self.open_base_file))
+        self._row_file(form, 1, "对比文件", self.target_file, self.pick_target_file, extra_button=("打开", self.open_target_file))
         self.base_sql_column_box, self.target_sql_column_box = self._row_dual_select(
             form, 2, "主文件 SQL 列", self.base_sql_column, "对比文件 SQL 列", self.target_sql_column
         )
         self._row_dual_multi_select(form, 3, "主文件显示列", "对比文件显示列")
         self.base_sql_column_box.bind("<<ComboboxSelected>>", self._on_base_sql_column_changed)
         self.target_sql_column_box.bind("<<ComboboxSelected>>", self._on_target_sql_column_changed)
-        self._row_dual_text(form, 4, "候选召回 top_k", self.top_k, "每批条数", self.batch_size)
-        self._row_file(form, 5, "结果目录", self.result_dir, self.pick_result_dir, directory=True)
+        self._bind_combobox_mousewheel(self.base_sql_column_box)
+        self._bind_combobox_mousewheel(self.target_sql_column_box)
+        self._row_dual_text(form, 4, "候选召回数量", self.top_k, "每批处理条数", self.batch_size)
+        self._row_file(form, 5, "结果目录", self.result_dir, self.pick_result_dir, directory=True, extra_button=("打开", self.open_result_dir))
 
     def _build_flow_section(self, body) -> None:
         flow = ttk.Frame(body, style="CardBody.TFrame")
@@ -493,7 +495,7 @@ class SqlSemanticWorkflowApp:
         prompt_button = ttk.Button(flow, text="② 复制 AI 提示词", style="Primary.TButton", command=self.refresh_and_copy_prompt, takefocus=False)
         prompt_button.grid(row=0, column=2)
         ttk.Label(flow, text="→", style="SectionTitle.TLabel").grid(row=0, column=3, padx=8)
-        merge_button = ttk.Button(flow, text="③ 合并生成 Excel", style="Primary.TButton", command=self.merge_and_finalize, takefocus=False)
+        merge_button = ttk.Button(flow, text="③ 合并结果并生成 Excel", style="Primary.TButton", command=self.merge_and_finalize, takefocus=False)
         merge_button.grid(row=0, column=4)
         self.action_buttons.extend([prepare_button, prompt_button, merge_button])
 
@@ -504,11 +506,11 @@ class SqlSemanticWorkflowApp:
         export_skill_button.grid(row=0, column=0)
         copy_role_button = ttk.Button(row, text="🧠 复制智能体角色文案", style="Secondary.TButton", command=self.copy_role_md, takefocus=False)
         copy_role_button.grid(row=0, column=1, padx=(8, 0))
-        open_dir_button = ttk.Button(row, text="📁 打开结果目录", style="Secondary.TButton", command=self.open_result_dir, takefocus=False)
-        open_dir_button.grid(row=0, column=2, padx=(8, 0))
+        cleanup_button = ttk.Button(row, text="🧹 清理中间结果", style="Secondary.TButton", command=self.clean_intermediate_files, takefocus=False)
+        cleanup_button.grid(row=0, column=2, padx=(8, 0))
         open_excel_button = ttk.Button(row, text="📗 打开最终 Excel", style="Secondary.TButton", command=self.open_final_excel, takefocus=False)
         open_excel_button.grid(row=0, column=3, padx=(8, 0))
-        self.secondary_buttons.extend([export_skill_button, copy_role_button, open_dir_button, open_excel_button])
+        self.secondary_buttons.extend([export_skill_button, copy_role_button, cleanup_button, open_excel_button])
 
     def _build_status_section(self, body) -> None:
         self.status_badge = tk.Label(body, text="●", bg=self.card_bg, fg=self.status_color, font=("Microsoft YaHei UI", 14, "bold"))
@@ -634,6 +636,39 @@ class SqlSemanticWorkflowApp:
             target.bind("<Shift-Button-4>", on_shift_mousewheel, add="+")
             target.bind("<Shift-Button-5>", on_shift_mousewheel, add="+")
 
+    def _bind_mousewheel_tree(self, widget, scroll_target, horizontal_target=None) -> None:
+        self._bind_mousewheel_to_scroll_target(widget, scroll_target, horizontal_target)
+        for child in widget.winfo_children():
+            self._bind_mousewheel_tree(child, scroll_target, horizontal_target)
+
+    def _bind_combobox_mousewheel(self, combo: ttk.Combobox) -> None:
+        def on_combo_mousewheel(event):
+            values = list(combo.cget("values") or [])
+            if not values:
+                return "break"
+            try:
+                current_index = values.index(combo.get())
+            except ValueError:
+                current_index = 0
+
+            if event.delta:
+                step = -1 if event.delta > 0 else 1
+            elif getattr(event, "num", None) == 4:
+                step = -1
+            elif getattr(event, "num", None) == 5:
+                step = 1
+            else:
+                return "break"
+
+            next_index = max(0, min(len(values) - 1, current_index + step))
+            if next_index != current_index:
+                combo.set(values[next_index])
+                combo.event_generate("<<ComboboxSelected>>")
+            return "break"
+
+        for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            combo.bind(seq, on_combo_mousewheel, add="+")
+
     def _toggle_display_popup(self, kind: str) -> None:
         if self.active_display_popup_kind == kind and self.active_display_popup is not None:
             self._close_display_popup()
@@ -672,6 +707,28 @@ class SqlSemanticWorkflowApp:
         )
         title_label.pack(fill=tk.X, padx=10, pady=(8, 4))
 
+        toolbar = tk.Frame(inner, bg=self.card_bg, bd=0, highlightthickness=0)
+        toolbar.pack(fill=tk.X, padx=8, pady=(0, 6))
+        toolbar.columnconfigure(0, weight=1)
+
+        search_var = tk.StringVar()
+        search_entry = ttk.Entry(toolbar, textvariable=search_var)
+        search_entry.grid(row=0, column=0, sticky="ew")
+        ttk.Button(
+            toolbar,
+            text="全选",
+            style="FilePick.TButton",
+            width=4,
+            takefocus=False,
+        ).grid(row=0, column=1, padx=(6, 0))
+        ttk.Button(
+            toolbar,
+            text="清空",
+            style="FilePick.TButton",
+            width=4,
+            takefocus=False,
+        ).grid(row=0, column=2, padx=(6, 0))
+
         canvas = tk.Canvas(inner, bg=self.card_bg, highlightthickness=0, bd=0)
         scrollbar = ttk.Scrollbar(inner, orient=tk.VERTICAL, command=canvas.yview)
         list_frame = tk.Frame(canvas, bg=self.card_bg, bd=0, highlightthickness=0)
@@ -683,12 +740,12 @@ class SqlSemanticWorkflowApp:
         canvas.configure(yscrollcommand=scrollbar.set)
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(6, 0), pady=(0, 6))
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y, padx=(0, 6), pady=(0, 6))
-        self._bind_mousewheel_to_scroll_target(canvas, canvas)
-        self._bind_mousewheel_to_scroll_target(list_frame, canvas)
 
+        row_items = []
         for column, var in options:
+            row = tk.Frame(list_frame, bg=self.card_bg, bd=0, highlightthickness=0)
             check = tk.Checkbutton(
-                list_frame,
+                row,
                 text=column,
                 variable=var,
                 command=self._toggle_base_display_column if kind == "base" else self._toggle_target_display_column,
@@ -706,17 +763,55 @@ class SqlSemanticWorkflowApp:
             )
             check.pack(fill=tk.X, anchor="w")
 
+            def on_row_click(_event, widget=check):
+                widget.invoke()
+                return "break"
+
+            row.bind("<Button-1>", on_row_click, add="+")
+            row.pack(fill=tk.X, anchor="w")
+            row_items.append((column, var, row))
+
+        update_summary = self._toggle_base_display_column if kind == "base" else self._toggle_target_display_column
+
+        def apply_filter(*_args) -> None:
+            keyword = search_var.get().strip().lower()
+            for column, _var, row in row_items:
+                visible = not keyword or keyword in column.lower()
+                if visible:
+                    if not row.winfo_ismapped():
+                        row.pack(fill=tk.X, anchor="w")
+                else:
+                    if row.winfo_ismapped():
+                        row.pack_forget()
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.yview_moveto(0)
+
+        def set_visible_checked(checked: bool) -> None:
+            for _column, var, row in row_items:
+                if row.winfo_ismapped():
+                    var.set(checked)
+            update_summary()
+            apply_filter()
+
+        search_var.trace_add("write", apply_filter)
+        search_entry.insert(0, "")
+        search_entry.bind("<Escape>", lambda _e: (search_var.set(""), "break"))
+        toolbar.winfo_children()[1].configure(command=lambda: set_visible_checked(True))
+        toolbar.winfo_children()[2].configure(command=lambda: set_visible_checked(False))
+
         self.root.update_idletasks()
         button.update_idletasks()
         popup_width = max(button.winfo_width(), 180)
-        popup_height = min(240, max(110, 32 + len(options) * 28))
+        popup_height = min(280, max(150, 72 + len(options) * 28))
         x = button.winfo_rootx()
         y = button.winfo_rooty() + button.winfo_height() + 2
         root_left = self.root.winfo_rootx()
         root_right = root_left + self.root.winfo_width()
         popup_width = min(popup_width, max(180, root_right - x - 12))
         popup.geometry(f"{popup_width}x{popup_height}+{x}+{y}")
-        canvas.configure(width=popup_width - 22, height=popup_height - 34)
+        canvas.configure(width=popup_width - 22, height=popup_height - 72)
+        apply_filter()
+        self._bind_mousewheel_tree(popup, canvas)
 
         self.active_display_popup = popup
         self.active_display_popup_kind = kind
@@ -761,10 +856,18 @@ class SqlSemanticWorkflowApp:
             return
         self._close_display_popup()
 
-    def _row_file(self, parent, row: int, label: str, var: tk.StringVar, cmd, directory: bool = False, save: bool = False) -> None:
+    def _row_file(self, parent, row: int, label: str, var: tk.StringVar, cmd, directory: bool = False, save: bool = False, extra_button: tuple[str, object] | None = None) -> None:
         ttk.Label(parent, text=label, style="FieldLabel.TLabel").grid(row=row, column=0, sticky="w", padx=(0, 8), pady=3)
+        if extra_button is not None:
+            text, button_cmd = extra_button
+            ttk.Entry(parent, textvariable=var).grid(row=row, column=1, columnspan=3, sticky="ew", pady=3)
+            button_row = ttk.Frame(parent, style="CardBody.TFrame")
+            button_row.grid(row=row, column=4, sticky="e", padx=(6, 0), pady=3)
+            ttk.Button(button_row, text="选择", width=5, style="FilePick.TButton", command=cmd, takefocus=False).grid(row=0, column=0)
+            ttk.Button(button_row, text=text, width=5, style="FilePick.TButton", command=button_cmd, takefocus=False).grid(row=0, column=1, padx=(6, 0))
+            return
         ttk.Entry(parent, textvariable=var).grid(row=row, column=1, columnspan=3, sticky="ew", pady=3)
-        ttk.Button(parent, text="选择", width=5, style="FilePick.TButton", command=cmd, takefocus=False).grid(row=row, column=4, padx=(6, 0), pady=3, sticky="ew")
+        ttk.Button(parent, text="选择", width=5, style="FilePick.TButton", command=cmd, takefocus=False).grid(row=row, column=4, padx=(6, 0), pady=3, sticky="e")
 
     def _row_dual_text(
         self,
@@ -1053,11 +1156,68 @@ class SqlSemanticWorkflowApp:
         except Exception as exc:
             messagebox.showerror("错误", f"{exc}\n\n{traceback.format_exc()}")
 
+    def open_base_file(self) -> None:
+        try:
+            self._open_path(Path(self.base_file.get().strip()))
+        except Exception as exc:
+            messagebox.showerror("错误", f"{exc}\n\n{traceback.format_exc()}")
+
+    def open_target_file(self) -> None:
+        try:
+            self._open_path(Path(self.target_file.get().strip()))
+        except Exception as exc:
+            messagebox.showerror("错误", f"{exc}\n\n{traceback.format_exc()}")
+
     def open_final_excel(self) -> None:
         try:
             self._open_path(self._final_excel_path())
         except Exception as exc:
             messagebox.showerror("错误", f"{exc}\n\n{traceback.format_exc()}")
+
+    def clean_intermediate_files(self) -> None:
+        result_dir = Path(self.result_dir.get().strip() or ".")
+        targets = [
+            result_dir / "prepare.json",
+            result_dir / "review_results.json",
+            result_dir / "prepare_parts",
+        ]
+        json_output_path = self._final_excel_path().with_suffix(".json")
+        if json_output_path.exists():
+            targets.append(json_output_path)
+
+        review_part_files = sorted(result_dir.glob("review_results_part_*.json"))
+        review_part_files += sorted((result_dir / "prepare_parts").glob("review_results_part_*.json"))
+        targets.extend(review_part_files)
+
+        existing_targets = [path for path in targets if path.exists()]
+        if not existing_targets:
+            messagebox.showinfo("提示", "当前没有可清理的中间文件。")
+            return
+
+        confirmed = messagebox.askyesno(
+            "确认清理",
+            "将删除 prepare.json、prepare_parts、review_results.json、review_results_part_x.json 和最终结果对应的 JSON 底稿，不会删除最终 Excel。是否继续？",
+        )
+        if not confirmed:
+            return
+
+        deleted = 0
+        for path in existing_targets:
+            if path.is_dir():
+                for child in sorted(path.rglob("*"), reverse=True):
+                    if child.is_file():
+                        child.unlink(missing_ok=True)
+                    elif child.is_dir():
+                        child.rmdir()
+                path.rmdir()
+            else:
+                path.unlink(missing_ok=True)
+            deleted += 1
+
+        self.review_result_files = []
+        self._set_status(f"已清理 {deleted} 个中间文件或目录")
+        self._set_status_card("success", "已完成", "中间文件已清理，不影响最终 Excel。")
+        self.refresh_all_previews()
 
     def _set_combobox_values(self, combo: ttk.Combobox, values: List[str]) -> None:
         combo["values"] = values
@@ -1227,6 +1387,29 @@ class SqlSemanticWorkflowApp:
             raise RuntimeError(f"缺少 review_results_part 文件：第 {', '.join(map(str, missing_parts))} 批")
         if extra_parts:
             raise RuntimeError(f"发现多余的 review_results_part 文件：第 {', '.join(map(str, extra_parts))} 批")
+
+        prepare_part_map = {}
+        for path in prepare_parts:
+            part_no = self._extract_part_no(path)
+            if part_no is not None:
+                prepare_part_map[part_no] = path
+
+        review_part_map = {}
+        for path in self.review_result_files:
+            part_no = self._extract_part_no(path)
+            if part_no is not None:
+                review_part_map[part_no] = path
+
+        for part_no in expected_parts:
+            prepare_part_path = prepare_part_map[part_no]
+            review_part_path = review_part_map[part_no]
+            prepare_part = workflow.load_json(prepare_part_path)
+            review_items = workflow.normalize_review_results(workflow.load_json(review_part_path))
+            workflow.validate_review_results_against_prepare_part(
+                prepare_part,
+                review_items,
+                review_part_path,
+            )
 
     def _persist_settings(self) -> None:
         self.saved_base_display_columns = self.get_selected_base_display_columns()

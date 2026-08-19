@@ -664,6 +664,54 @@ def normalize_review_results(raw: object) -> List[Dict[str, object]]:
     return [dict(item) for item in items]
 
 
+def validate_review_results_against_prepare_part(
+    prepare_part: Dict[str, object],
+    review_items: Sequence[Dict[str, object]],
+    review_path: Path | None = None,
+) -> None:
+    expected_result_count = int(prepare_part.get("expected_result_count") or 0)
+    expected_pair_ids = [str(x) for x in prepare_part.get("expected_pair_ids") or []]
+    part_no = prepare_part.get("part_no")
+    source_name = str(review_path) if review_path is not None else f"第 {part_no} 批 review 结果"
+
+    actual_pair_ids = [str(item.get("pair_id") or "").strip() for item in review_items]
+    actual_non_empty_pair_ids = [pair_id for pair_id in actual_pair_ids if pair_id]
+
+    if len(review_items) != expected_result_count:
+        raise ValueError(
+            f"{source_name} 条数不正确：期望 {expected_result_count} 条，实际 {len(review_items)} 条"
+        )
+
+    if len(actual_non_empty_pair_ids) != len(review_items):
+        raise ValueError(f"{source_name} 中存在缺少 pair_id 的结果")
+
+    expected_set = set(expected_pair_ids)
+    actual_set = set(actual_non_empty_pair_ids)
+
+    missing_pair_ids = [pair_id for pair_id in expected_pair_ids if pair_id not in actual_set]
+    extra_pair_ids = [pair_id for pair_id in actual_non_empty_pair_ids if pair_id not in expected_set]
+
+    if missing_pair_ids:
+        raise ValueError(
+            f"{source_name} 缺少预期 pair_id：{', '.join(missing_pair_ids[:10])}"
+        )
+    if extra_pair_ids:
+        raise ValueError(
+            f"{source_name} 存在不属于本批次的 pair_id：{', '.join(extra_pair_ids[:10])}"
+        )
+
+    seen = set()
+    duplicated_pair_ids: List[str] = []
+    for pair_id in actual_non_empty_pair_ids:
+        if pair_id in seen and pair_id not in duplicated_pair_ids:
+            duplicated_pair_ids.append(pair_id)
+        seen.add(pair_id)
+    if duplicated_pair_ids:
+        raise ValueError(
+            f"{source_name} 存在重复 pair_id：{', '.join(duplicated_pair_ids[:10])}"
+        )
+
+
 def merge_review_result_files(paths: Sequence[Path]) -> List[Dict[str, object]]:
     merged: List[Dict[str, object]] = []
     seen_pair_ids = set()
